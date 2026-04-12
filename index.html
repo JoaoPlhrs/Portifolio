@@ -33,7 +33,6 @@
             overflow-x: hidden;
         }
 
-        /* Grid background pattern */
         body::before {
             content: '';
             position: fixed;
@@ -49,7 +48,6 @@
             z-index: -1;
         }
 
-        /* ==================== NAVBAR ==================== */
         nav {
             display: flex;
             justify-content: space-between;
@@ -108,9 +106,15 @@
             width: 100%;
         }
 
-        .nav-icon {
-            width: 32px;
-            height: 32px;
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .lang-toggle {
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
             border: 1px solid var(--border);
             display: flex;
@@ -119,7 +123,35 @@
             cursor: pointer;
             transition: all 0.3s ease;
             color: var(--text-secondary);
-            font-size: 1rem;
+            font-size: 0.9rem;
+            user-select: none;
+            font-weight: 700;
+        }
+
+        .lang-toggle:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            box-shadow: 0 0 20px var(--shadow);
+        }
+
+        .lang-toggle:active {
+            transform: scale(0.95);
+        }
+
+        .nav-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+            user-select: none;
+            position: relative;
         }
 
         .nav-icon:hover {
@@ -128,7 +160,74 @@
             box-shadow: 0 0 20px var(--shadow);
         }
 
-        /* ==================== HERO SECTION ==================== */
+        .nav-icon:active {
+            transform: scale(0.95);
+        }
+
+        .alien-counter-small {
+            position: absolute;
+            bottom: -2.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1.1rem;
+            color: var(--accent);
+            z-index: 9998;
+            font-weight: 700;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.1em;
+            white-space: nowrap;
+        }
+
+        .floating-alien {
+            position: fixed;
+            font-size: 2rem;
+            pointer-events: none;
+            z-index: 9999;
+            will-change: transform, opacity;
+        }
+
+        @keyframes riseAndFade {
+            0% {
+                opacity: 1;
+                transform: translate(0, 0) scale(1);
+            }
+            100% {
+                opacity: 0;
+                transform: translate(var(--tx), -300px) scale(0.5);
+            }
+        }
+
+        .floating-alien.active {
+            animation: riseAndFade 3s ease-out forwards;
+        }
+
+        .counter-display {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 5rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-shadow: 0 0 30px var(--accent);
+            pointer-events: none;
+            z-index: 10000;
+            animation: counterPop 0.6s ease-out forwards;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.2em;
+        }
+
+        @keyframes counterPop {
+            0% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(0.5);
+            }
+            100% {
+                opacity: 0;
+                transform: translate(-50%, -50%) scale(1.5);
+            }
+        }
+
         .hero {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -241,7 +340,6 @@
             transform: translateY(-2px);
         }
 
-        /* Hero emoji */
         .hero-emoji {
             display: flex;
             align-items: center;
@@ -274,7 +372,6 @@
             }
         }
 
-        /* ==================== PROJECTS SECTION ==================== */
         .projects {
             padding: 6rem 3rem;
             background: var(--bg-secondary);
@@ -362,7 +459,6 @@
             letter-spacing: 0.5px;
         }
 
-        /* ==================== SKILLS SECTION ==================== */
         .skills {
             padding: 6rem 3rem;
             border-top: 1px solid var(--border);
@@ -418,7 +514,6 @@
             padding-left: 0.5rem;
         }
 
-        /* ==================== FOOTER ==================== */
         footer {
             padding: 3rem;
             border-top: 1px solid var(--border);
@@ -456,7 +551,6 @@
             font-size: 0.9rem;
         }
 
-        /* ==================== RESPONSIVE DESIGN ==================== */
         @media (max-width: 768px) {
             nav {
                 padding: 1.2rem 1.5rem;
@@ -551,7 +645,6 @@
     </style>
 </head>
 <body>
-    <!-- ==================== NAVBAR ==================== -->
     <nav>
         <div class="logo">joao.dev</div>
         <ul class="nav-links">
@@ -560,10 +653,15 @@
             <li><a href="#skills">Skills</a></li>
             <li><a href="#contact">Contact</a></li>
         </ul>
-        <div class="nav-icon">⚙️</div>
+        <div class="nav-buttons">
+            <button class="lang-toggle" id="langToggle">EN</button>
+            <div style="position: relative;">
+                <div class="nav-icon" id="alienButton">👽</div>
+                <div class="alien-counter-small" id="counterDisplay">0</div>
+            </div>
+        </div>
     </nav>
 
-    <!-- ==================== HERO SECTION ==================== -->
     <section class="hero" id="home">
         <div class="hero-content">
             <div class="hero-label">Full-Stack Developer</div>
@@ -583,7 +681,7 @@
                 <button class="btn btn-primary" onclick="document.getElementById('projects').scrollIntoView({behavior: 'smooth'})">
                     View Projects
                 </button>
-                <a href="https://github.com" class="btn btn-secondary">
+                <a href="https://github.com/JoaoPlhrs" class="btn btn-secondary">
                     GitHub →
                 </a>
             </div>
@@ -594,11 +692,9 @@
         </div>
     </section>
 
-    <!-- ==================== PROJECTS SECTION ==================== -->
     <section class="projects" id="projects">
         <h2 class="section-title">Featured Projects</h2>
         <div class="projects-grid">
-            <!-- Project 1 -->
             <div class="project-card">
                 <h3 class="project-title">Apolo</h3>
                 <p class="project-description">
@@ -612,7 +708,6 @@
                 </div>
             </div>
 
-            <!-- Project 2 -->
             <div class="project-card">
                 <h3 class="project-title">LocalAI System</h3>
                 <p class="project-description">
@@ -625,42 +720,32 @@
                     <span class="tech-badge">API</span>
                 </div>
             </div>
-
-
         </div>
     </section>
 
-    <!-- ==================== SKILLS SECTION ==================== -->
     <section class="skills" id="skills">
         <h2 class="section-title">Skills & Expertise</h2>
         <div class="skills-grid">
-            <!-- Languages -->
             <div class="skill-category">
                 <h3 class="skill-category-title">Languages</h3>
                 <ul class="skill-list">
                     <li>Python</li>
                     <li>JavaScript / TypeScript</li>
-                    <li>SQL</li>
                     <li>Bash / Shell</li>
-                    <li>C++</li>
                     <li>HTML & CSS</li>
                 </ul>
             </div>
 
-            <!-- Tools & Technologies -->
             <div class="skill-category">
                 <h3 class="skill-category-title">Tools & Tech</h3>
                 <ul class="skill-list">
                     <li>TensorFlow & PyTorch</li>
                     <li>Docker & Kubernetes</li>
                     <li>AWS & Cloud Services</li>
-                    <li>PostgreSQL & MongoDB</li>
                     <li>Git & CI/CD</li>
-                    <li>React & Node.js</li>
                 </ul>
             </div>
 
-            <!-- Specializations -->
             <div class="skill-category">
                 <h3 class="skill-category-title">Specializations</h3>
                 <ul class="skill-list">
@@ -675,18 +760,17 @@
         </div>
     </section>
 
-    <!-- ==================== FOOTER ==================== -->
     <footer id="contact">
         <div class="footer-content">
             <div class="footer-links">
-                <a href="https://github.com" class="footer-link">
+                <a href="https://github.com/JoaoPlhrs" class="footer-link">
                     <span>GitHub</span>
+                </a>
+                <a href="https://instagram.com/Dev.Jpalhares" class="footer-link">
+                    <span>Instagram</span>
                 </a>
                 <a href="mailto:hello@joao.dev" class="footer-link">
                     <span>Email</span>
-                </a>
-                <a href="https://linkedin.com" class="footer-link">
-                    <span>LinkedIn</span>
                 </a>
             </div>
             <p class="footer-text">
@@ -696,6 +780,144 @@
     </footer>
 
     <script>
+        // LANGUAGE TOGGLE
+        const langToggle = document.getElementById('langToggle');
+        let currentLang = 'en';
+
+        const translations = {
+            en: {
+                home: 'Home',
+                projects: 'Projects',
+                skills: 'Skills',
+                contact: 'Contact',
+                label: 'Full-Stack Developer',
+                description: 'I build intelligent systems, offline AI tools, and custom software using Python and modern technologies. Passionate about clean code, automation, and creating solutions that matter.',
+                viewProjects: 'View Projects',
+                github: 'GitHub →',
+                featuredProjects: 'Featured Projects',
+                apolo: 'Apolo',
+                apoloDesc: 'An intelligent offline AI assistant that runs locally without internet dependency. Features advanced NLP and real-time response capabilities.',
+                localAI: 'LocalAI System',
+                localAIDesc: 'A lightweight framework for deploying machine learning models on edge devices. Optimized for privacy and performance without cloud dependency.',
+                skillsTitle: 'Skills & Expertise',
+                languages: 'Languages',
+                tools: 'Tools & Tech',
+                specializations: 'Specializations',
+                copyright: '© 2024 João Palhares. All rights reserved. Built with minimalism and modern design principles.'
+            },
+            pt: {
+                home: 'Início',
+                projects: 'Projetos',
+                skills: 'Habilidades',
+                contact: 'Contato',
+                label: 'Desenvolvedor Full-Stack',
+                description: 'Construo sistemas inteligentes, ferramentas de IA offline e software personalizado usando Python e tecnologias modernas. Apaixonado por código limpo, automação e criação de soluções que importam.',
+                viewProjects: 'Ver Projetos',
+                github: 'GitHub →',
+                featuredProjects: 'Projetos em Destaque',
+                apolo: 'Apolo',
+                apoloDesc: 'Um assistente de IA offline inteligente que funciona localmente sem dependência de internet. Apresenta capacidades avançadas de NLP e resposta em tempo real.',
+                localAI: 'Sistema LocalAI',
+                localAIDesc: 'Um framework leve para implantar modelos de aprendizado de máquina em dispositivos de borda. Otimizado para privacidade e desempenho sem dependência de nuvem.',
+                skillsTitle: 'Habilidades & Especialidades',
+                languages: 'Linguagens',
+                tools: 'Ferramentas & Tech',
+                specializations: 'Especializações',
+                copyright: '© 2024 João Palhares. Todos os direitos reservados. Construído com minimalismo e princípios de design moderno.'
+            }
+        };
+
+        function translatePage(lang) {
+            currentLang = lang;
+            const t = translations[lang];
+
+            document.querySelectorAll('.nav-links a')[0].textContent = t.home;
+            document.querySelectorAll('.nav-links a')[1].textContent = t.projects;
+            document.querySelectorAll('.nav-links a')[2].textContent = t.skills;
+            document.querySelectorAll('.nav-links a')[3].textContent = t.contact;
+
+            document.querySelector('.hero-label').textContent = t.label;
+            document.querySelector('.hero-description').textContent = t.description;
+            document.querySelector('.btn-primary').textContent = t.viewProjects;
+            document.querySelector('.btn-secondary').textContent = t.github;
+
+            document.querySelectorAll('.section-title')[0].textContent = t.featuredProjects;
+            document.querySelectorAll('.project-title')[0].textContent = t.apolo;
+            document.querySelectorAll('.project-description')[0].textContent = t.apoloDesc;
+            document.querySelectorAll('.project-title')[1].textContent = t.localAI;
+            document.querySelectorAll('.project-description')[1].textContent = t.localAIDesc;
+
+            document.querySelectorAll('.section-title')[1].textContent = t.skillsTitle;
+            document.querySelectorAll('.skill-category-title')[0].textContent = t.languages;
+            document.querySelectorAll('.skill-category-title')[1].textContent = t.tools;
+            document.querySelectorAll('.skill-category-title')[2].textContent = t.specializations;
+
+            document.querySelector('.footer-text').textContent = t.copyright;
+            langToggle.textContent = lang === 'en' ? 'PT' : 'EN';
+        }
+
+        langToggle.addEventListener('click', function() {
+            const newLang = currentLang === 'en' ? 'pt' : 'en';
+            translatePage(newLang);
+        });
+
+        // ALIEN COUNTER
+        let alienCount = 0;
+        const counterDisplay = document.getElementById('counterDisplay');
+        const alienButton = document.getElementById('alienButton');
+
+        function updateCounter(add) {
+            alienCount += add;
+            if (alienCount > 999) {
+                alienCount = 999;
+            }
+
+            const paddedCount = String(alienCount).padStart(3, '0');
+            counterDisplay.textContent = paddedCount;
+
+            const popCounter = document.createElement('div');
+            popCounter.className = 'counter-display';
+            popCounter.textContent = `+${add}`;
+            document.body.appendChild(popCounter);
+
+            setTimeout(() => popCounter.remove(), 600);
+        }
+
+        alienButton.addEventListener('click', function() {
+            updateCounter(1);
+
+            const rect = alienButton.getBoundingClientRect();
+            const startX = rect.left + rect.width / 2;
+            const startY = rect.top + rect.height / 2;
+
+            const alienSpawned = 8;
+            for (let i = 0; i < alienSpawned; i++) {
+                const alien = document.createElement('div');
+                alien.className = 'floating-alien';
+                alien.textContent = '👽';
+
+                const angle = (i / alienSpawned) * Math.PI * 2;
+                const distance = 100;
+                const tx = Math.cos(angle) * distance;
+
+                alien.style.left = startX + 'px';
+                alien.style.top = startY + 'px';
+                alien.style.setProperty('--tx', tx + 'px');
+
+                document.body.appendChild(alien);
+
+                setTimeout(() => {
+                    alien.classList.add('active');
+                }, 10);
+
+                setTimeout(() => {
+                    if (alien.parentNode) {
+                        alien.remove();
+                    }
+                }, 3100);
+            }
+        });
+
         // Smooth scroll for anchor links
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             anchor.addEventListener('click', function(e) {
@@ -710,7 +932,7 @@
             });
         });
 
-        // Add scroll animation to elements
+        // Observe project cards
         const observerOptions = {
             threshold: 0.1,
             rootMargin: '0px 0px -50px 0px'
@@ -725,19 +947,9 @@
             });
         }, observerOptions);
 
-        // Observe project cards
         document.querySelectorAll('.project-card').forEach(card => {
             card.style.opacity = '0';
             observer.observe(card);
-        });
-
-        // Smooth navigation underline
-        const navLinks = document.querySelectorAll('.nav-links a');
-        navLinks.forEach(link => {
-            link.addEventListener('click', () => {
-                navLinks.forEach(l => l.style.color = 'var(--text-secondary)');
-                link.style.color = 'var(--accent)';
-            });
         });
     </script>
 </body>
