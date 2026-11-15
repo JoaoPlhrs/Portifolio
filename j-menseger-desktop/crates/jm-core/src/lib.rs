@@ -1,0 +1,9 @@
+//! Núcleo do J-Menseger: protocolo cifrado, servidores, identidade e armazenamento.
+//!
+//! Este módulo não conhece a interface e roda sem janela, o que permite testá-lo
+//! com clientes reais em linha de comando.
+
+pub mod identity;
+pub mod protocol;
+
+pub use protocol::{DEFAULT_RELAYS, CHUNK};
