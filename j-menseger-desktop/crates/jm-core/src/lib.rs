@@ -4,6 +4,7 @@
 //! com clientes reais em linha de comando.
 
 pub mod engine;
+pub mod groups;
 pub mod identity;
 pub mod messages;
 pub mod protocol;

@@ -4,6 +4,7 @@
 //! métodos daqui e escuta [`EngineEvent`]. Assim a janela nunca trava
 //! esperando um servidor responder.
 
+use crate::groups::{Group, GroupMeta, Template};
 use crate::identity;
 use crate::messages::{AppMessage, ChatKey, Delivery, ReceiptKind};
 use crate::protocol::{self, WrapOptions, KIND_APP, KIND_REACTION, KIND_TEXT};
@@ -134,6 +135,8 @@ pub enum MessageBody {
     /// Aviso do sistema ("entrou no grupo", "chamada perdida"…).
     System(String),
     Sound { id: String },
+    /// Convite para um grupo, com botão de entrar.
+    Invite { lid: String, name: String },
     Deleted,
 }
 
@@ -143,6 +146,7 @@ impl MessageBody {
             MessageBody::Text(_) => "text",
             MessageBody::System(_) => "sys",
             MessageBody::Sound { .. } => "sound",
+            MessageBody::Invite { .. } => "invite",
             MessageBody::Deleted => "deleted",
         }
     }
@@ -151,6 +155,7 @@ impl MessageBody {
             MessageBody::Text(t) => serde_json::json!({ "text": t }).to_string(),
             MessageBody::System(t) => serde_json::json!({ "text": t }).to_string(),
             MessageBody::Sound { id } => serde_json::json!({ "id": id }).to_string(),
+            MessageBody::Invite { lid, name } => serde_json::json!({ "lid": lid, "text": name }).to_string(),
             MessageBody::Deleted => "{}".into(),
         }
     }
@@ -163,6 +168,10 @@ impl MessageBody {
             "sound" => MessageBody::Sound {
                 id: v["id"].as_str().unwrap_or_default().to_string(),
             },
+            "invite" => MessageBody::Invite {
+                lid: v["lid"].as_str().unwrap_or_default().to_string(),
+                name: text.clone(),
+            },
             _ => MessageBody::Deleted,
         }
     }
@@ -173,6 +182,7 @@ impl MessageBody {
             MessageBody::Text(t) => t.clone(),
             MessageBody::System(t) => t.clone(),
             MessageBody::Sound { .. } => "Som do soundboard".into(),
+            MessageBody::Invite { name, .. } => format!("Convite para {name}"),
             MessageBody::Deleted => "Mensagem apagada".into(),
         }
     }
@@ -195,6 +205,8 @@ pub enum EngineEvent {
     Typing { chat: String, who: String },
     /// Mudou a conexão com os servidores.
     Relays(Vec<RelayStatus>),
+    /// A lista de grupos ou os dados de um grupo mudaram.
+    GroupsChanged,
 }
 
 /// Ajustes do aplicativo.
@@ -219,6 +231,7 @@ impl Default for Settings {
 
 struct State {
     contacts: HashMap<String, Contact>,
+    groups: HashMap<String, Group>,
     /// Quando pedimos o perfil de alguém pela última vez, para não insistir.
     prof_req_at: HashMap<String, i64>,
     /// Conversa aberta na tela, para marcar como lida e não notificar.
@@ -244,6 +257,7 @@ impl Engine {
         let me: Profile = store.get_kv("me")?.unwrap_or_default();
         let settings: Settings = store.get_kv("settings")?.unwrap_or_default();
         let contacts = load_contacts(&store)?;
+        let groups = load_groups(&store)?;
 
         let (tx, rx) = mpsc::unbounded_channel();
         let engine = Arc::new(Self {
@@ -254,6 +268,7 @@ impl Engine {
             store: Arc::new(Mutex::new(store)),
             state: Arc::new(Mutex::new(State {
                 contacts,
+                groups,
                 prof_req_at: HashMap::new(),
                 active: None,
             })),
@@ -326,7 +341,7 @@ impl Engine {
 
         self.pool
             .subscribe_inbox(
-                &[self.keys.public_key()],
+                &self.inbox_keys(),
                 Timestamp::from_secs(since.max(0) as u64),
             )
             .await
@@ -369,11 +384,30 @@ impl Engine {
             return Ok(());
         }
 
-        let rumor = protocol::unwrap_event(event, &self.keys)
+        // O envelope diz para quem foi endereçado. Pode ser para mim ou para a
+        // chave de um grupo que eu participo.
+        let destino = protocol::tag_value_event(event, "p").unwrap_or_default();
+        let grupo = self.group_for_pubkey(&destino);
+
+        let abridor = match &grupo {
+            Some((_, keys)) => keys.clone(),
+            None => {
+                if destino != self.keys.public_key().to_hex() {
+                    return Ok(());
+                }
+                self.keys.clone()
+            }
+        };
+
+        let rumor = protocol::unwrap_event(event, &abridor)
             .map_err(|e| EngineError::Protocol(e.to_string()))?;
 
         let author = rumor.pubkey.to_hex();
         let from_me = rumor.pubkey == self.keys.public_key();
+
+        if let Some((lid, _)) = grupo {
+            return self.handle_group_rumor(&rumor, &lid, from_me);
+        }
 
         // Quem está bloqueado não entrega nada.
         if !from_me {
@@ -468,6 +502,9 @@ impl Engine {
                 tokio::spawn(async move {
                     let _ = me.send_profile(&p).await;
                 });
+            }
+            AppMessage::GroupInvite { g } if !from_me => {
+                self.store_invite(g, peer, chat, ts_ms)?;
             }
             AppMessage::Receipt { s, ids } if !from_me => {
                 let status = match s {
@@ -604,11 +641,10 @@ impl Engine {
         }
         let key = ChatKey::parse(chat_key)
             .ok_or_else(|| EngineError::UnknownChat(chat_key.to_string()))?;
-        let ChatKey::Direct { peer } = &key else {
-            return Err(EngineError::Protocol(
-                "envio para canal de grupo ainda não ligado nesta versão".into(),
-            ));
-        };
+        if let ChatKey::Channel { lid, channel } = &key {
+            return self.send_text_to_channel(lid, channel, &text).await;
+        }
+        let ChatKey::Direct { peer } = &key else { unreachable!() };
         let peer_pk = PublicKey::from_hex(peer)
             .map_err(|_| EngineError::UnknownChat(chat_key.to_string()))?;
 
@@ -676,6 +712,62 @@ impl Engine {
         let _ = self.pool.publish(&para_mim).await;
         let _ = self.events.send(EngineEvent::ChatsChanged);
 
+        Ok(msg)
+    }
+
+    /// Manda texto em um canal de grupo.
+    async fn send_text_to_channel(
+        self: &Arc<Self>,
+        lid: &str,
+        channel: &str,
+        text: &str,
+    ) -> Result<Message> {
+        let g = self.group(lid).ok_or_else(|| EngineError::UnknownChat(lid.into()))?;
+        if g.joined_at == 0 {
+            return Err(EngineError::Protocol("aceite o convite antes de escrever".into()));
+        }
+        let pk = PublicKey::from_hex(&g.pk)
+            .map_err(|_| EngineError::Protocol("chave do grupo inválida".into()))?;
+        let chat_key = ChatKey::Channel { lid: lid.into(), channel: channel.into() }.as_string();
+
+        let rumor = protocol::make_rumor(
+            &self.keys,
+            KIND_TEXT,
+            text,
+            vec![
+                Tag::public_key(pk),
+                Tag::custom("ch", [channel.to_string()]),
+            ],
+        );
+        let id = rumor.id.map(|i| i.to_hex()).unwrap_or_default();
+
+        let msg = Message {
+            id: id.clone(),
+            chat: chat_key.clone(),
+            author: self.keys.public_key().to_hex(),
+            from_me: true,
+            ts: now_ms(),
+            body: MessageBody::Text(text.to_string()),
+            status: Some(Delivery::Pending),
+            reply: None,
+        };
+        self.store_and_emit(msg.clone(), None, false)?;
+
+        // Uma cópia só: todos no grupo abrem com a mesma chave.
+        let env = protocol::wrap_rumor(&rumor, &self.keys, &pk, WrapOptions::default())
+            .map_err(|e| EngineError::Protocol(e.to_string()))?;
+        match self.pool.publish(&env).await {
+            Ok(_) => {
+                self.store.lock().unwrap().set_msg_status(&id, delivery_name(Delivery::Sent))?;
+                let _ = self.events.send(EngineEvent::MessageUpdated {
+                    chat: chat_key,
+                    id,
+                    status: Delivery::Sent,
+                });
+            }
+            Err(e) => tracing::warn!("mensagem de grupo não saiu: {e}"),
+        }
+        let _ = self.events.send(EngineEvent::ChatsChanged);
         Ok(msg)
     }
 
@@ -781,6 +873,413 @@ impl Engine {
             let _ = me.send_app(&pk, &AppMessage::ProfileRequest).await;
             let _ = me.send_profile(&pk).await;
         });
+    }
+
+    /* ---------------- grupos ---------------- */
+
+    /// Todas as chaves que este aparelho precisa escutar: a minha e a de cada
+    /// grupo, incluindo as chaves antigas dos grupos que trocaram de chave.
+    fn inbox_keys(&self) -> Vec<PublicKey> {
+        let mut v = vec![self.keys.public_key()];
+        let st = self.state.lock().unwrap();
+        for g in st.groups.values() {
+            for (pk, _) in g.all_keys() {
+                if let Ok(p) = PublicKey::from_hex(&pk) {
+                    v.push(p);
+                }
+            }
+        }
+        v
+    }
+
+    /// Descobre de qual grupo é uma chave de destino, e com que chave abrir.
+    fn group_for_pubkey(&self, pk_hex: &str) -> Option<(String, Keys)> {
+        let st = self.state.lock().unwrap();
+        for g in st.groups.values() {
+            for (pk, keys) in g.all_keys() {
+                if pk == pk_hex {
+                    return Some((g.lid.clone(), keys));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn group(&self, lid: &str) -> Option<Group> {
+        self.state.lock().unwrap().groups.get(lid).cloned()
+    }
+
+    pub fn groups(&self) -> Vec<Group> {
+        let mut v: Vec<Group> = self.state.lock().unwrap().groups.values().cloned().collect();
+        v.sort_by_key(|g| g.meta.name.to_lowercase());
+        v
+    }
+
+    /// Cria um grupo e já abre os canais dele na lista de conversas.
+    pub async fn create_group(self: &Arc<Self>, name: &str, template: Template) -> Result<Group> {
+        let g = Group::create(name, &self.keys.public_key(), &self.me.name, template);
+        self.save_group(&g)?;
+        {
+            let mut st = self.state.lock().unwrap();
+            st.groups.insert(g.lid.clone(), g.clone());
+        }
+        for ch in g.meta.text_channels() {
+            self.ensure_chat(&ChatKey::Channel { lid: g.lid.clone(), channel: ch.id.clone() }.as_string())?;
+        }
+        self.resubscribe().await;
+        let _ = self.events.send(EngineEvent::GroupsChanged);
+        Ok(g)
+    }
+
+    /// Convida alguém: manda a chave do grupo por mensagem privada.
+    pub async fn invite_to_group(self: &Arc<Self>, lid: &str, peer: &str) -> Result<()> {
+        let g = self.group(lid).ok_or_else(|| EngineError::UnknownChat(lid.into()))?;
+        self.ensure_contact(peer, ContactStatus::Ok)?;
+        let convite = crate::messages::GroupInvite {
+            sk: g.sk.clone(),
+            meta: serde_json::to_value(&g.meta).unwrap_or_default(),
+            ver: g.ver,
+            pic: g.pic.clone().unwrap_or_default(),
+            pic_v: g.pic_v,
+        };
+        self.send_app(peer, &AppMessage::GroupInvite { g: convite }).await
+    }
+
+    /// Entra em um grupo a partir de um convite recebido.
+    pub async fn accept_invite(self: &Arc<Self>, lid: &str) -> Result<Group> {
+        let mut g = {
+            let st = self.state.lock().unwrap();
+            st.groups.get(lid).cloned()
+        }
+        .ok_or_else(|| EngineError::UnknownChat(lid.into()))?;
+
+        let eu = self.keys.public_key().to_hex();
+        if !g.meta.members.contains(&eu) {
+            g.meta.members.push(eu.clone());
+        }
+        g.meta.names.insert(eu, self.me.name.clone());
+        g.joined_at = now_ms();
+        self.save_group(&g)?;
+        {
+            let mut st = self.state.lock().unwrap();
+            st.groups.insert(g.lid.clone(), g.clone());
+        }
+        for ch in g.meta.text_channels() {
+            self.ensure_chat(&ChatKey::Channel { lid: g.lid.clone(), channel: ch.id.clone() }.as_string())?;
+        }
+        self.resubscribe().await;
+        // Avisa o grupo que você entrou, para os outros verem o seu nome.
+        let _ = self
+            .send_to_group(&g, &AppMessage::GroupJoin {
+                n: self.me.name.clone(),
+                p: self.me.pic.clone(),
+            })
+            .await;
+        let _ = self.events.send(EngineEvent::GroupsChanged);
+        Ok(g)
+    }
+
+    /// Sai do grupo e apaga as conversas dele deste aparelho.
+    pub async fn leave_group(self: &Arc<Self>, lid: &str) -> Result<()> {
+        let g = self.group(lid).ok_or_else(|| EngineError::UnknownChat(lid.into()))?;
+        let _ = self.send_to_group(&g, &AppMessage::GroupLeave).await;
+        {
+            let store = self.store.lock().unwrap();
+            for ch in g.meta.channels.iter() {
+                let key = ChatKey::Channel { lid: lid.into(), channel: ch.id.clone() }.as_string();
+                store.delete_chat_msgs(&key)?;
+                store
+                    .raw()
+                    .execute("DELETE FROM chats WHERE key = ?1", rusqlite::params![key])
+                    .map_err(crate::store::StoreError::from)?;
+            }
+            store
+                .raw()
+                .execute("DELETE FROM groups WHERE lid = ?1", rusqlite::params![lid])
+                .map_err(crate::store::StoreError::from)?;
+        }
+        self.state.lock().unwrap().groups.remove(lid);
+        self.resubscribe().await;
+        let _ = self.events.send(EngineEvent::GroupsChanged);
+        let _ = self.events.send(EngineEvent::ChatsChanged);
+        Ok(())
+    }
+
+    /// Publica uma mensagem interna para todo o grupo.
+    async fn send_to_group(self: &Arc<Self>, g: &Group, app: &AppMessage) -> Result<()> {
+        let canal = g
+            .main_channel()
+            .map(|c| c.id.clone())
+            .ok_or_else(|| EngineError::Protocol("grupo sem canal de texto".into()))?;
+        let pk = PublicKey::from_hex(&g.pk).map_err(|_| EngineError::Protocol("chave do grupo inválida".into()))?;
+        let rumor = protocol::make_rumor(
+            &self.keys,
+            KIND_APP,
+            app.to_json(),
+            vec![Tag::public_key(pk), Tag::custom("ch", [canal])],
+        );
+        let env = protocol::wrap_rumor(
+            &rumor,
+            &self.keys,
+            &pk,
+            WrapOptions { ephemeral: app.is_ephemeral(), expiration: None },
+        )
+        .map_err(|e| EngineError::Protocol(e.to_string()))?;
+        self.pool.publish(&env).await.map_err(|e| EngineError::Relay(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Abre um rumor que veio endereçado à chave de um grupo.
+    fn handle_group_rumor(self: &Arc<Self>, rumor: &UnsignedEvent, lid: &str, from_me: bool) -> Result<()> {
+        let Some(g) = self.group(lid) else { return Ok(()) };
+        let author = rumor.pubkey.to_hex();
+
+        // O canal vem na marca `ch`. Se ele não existe mais, a mensagem é
+        // descartada em vez de cair no canal errado.
+        let canal = protocol::tag_value(rumor, "ch").map(|s| s.to_string());
+        let canal = match canal {
+            Some(c) if g.meta.channels.iter().any(|x| x.id == c) => c,
+            Some(_) => return Ok(()),
+            None => match g.main_channel() {
+                Some(c) => c.id.clone(),
+                None => return Ok(()),
+            },
+        };
+        let chat = ChatKey::Channel { lid: lid.into(), channel: canal }.as_string();
+        let ts_ms = rumor.created_at.as_secs() as i64 * 1000;
+
+        match rumor.kind.as_u16() {
+            KIND_TEXT => {
+                let msg = Message {
+                    id: rumor.id.map(|i| i.to_hex()).unwrap_or_default(),
+                    chat,
+                    author,
+                    from_me,
+                    ts: ts_ms,
+                    body: MessageBody::Text(rumor.content.chars().take(6000).collect()),
+                    status: from_me.then_some(Delivery::Sent),
+                    reply: protocol::tag_value(rumor, "e").map(|s| s.to_string()),
+                };
+                let exp = protocol::expiration_of(rumor).map(|t| t.as_secs() as i64 * 1000);
+                self.store_and_emit(msg, exp, !from_me)?;
+            }
+            KIND_APP => {
+                let Some(app) = AppMessage::parse(&rumor.content) else { return Ok(()) };
+                self.handle_group_app(app, g, &author, &chat, from_me, ts_ms)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_group_app(
+        self: &Arc<Self>,
+        app: AppMessage,
+        mut g: Group,
+        author: &str,
+        chat: &str,
+        from_me: bool,
+        ts_ms: i64,
+    ) -> Result<()> {
+        match app {
+            AppMessage::GroupJoin { n, p } if !from_me => {
+                let nome = n.chars().take(40).collect::<String>();
+                let novo = !g.meta.members.contains(&author.to_string());
+                if !nome.is_empty() {
+                    g.meta.names.insert(author.to_string(), nome.clone());
+                }
+                if let Some(pic) = p {
+                    if !pic.is_empty() {
+                        // Foto de perfil mostrada dentro do grupo.
+                        let mut st = self.state.lock().unwrap();
+                        if let Some(c) = st.contacts.get_mut(author) {
+                            c.pic = Some(pic);
+                        }
+                    }
+                }
+                // Só admin muda a lista de membros, mas quem entra por convite
+                // precisa aparecer para os outros.
+                if novo && g.meta.members.len() < 64 {
+                    g.meta.members.push(author.to_string());
+                }
+                self.save_group(&g)?;
+                self.state.lock().unwrap().groups.insert(g.lid.clone(), g.clone());
+                if novo {
+                    let msg = Message {
+                        id: format!("sys-join-{ts_ms}-{}", &author[..8.min(author.len())]),
+                        chat: chat.into(),
+                        author: author.into(),
+                        from_me: false,
+                        ts: ts_ms,
+                        body: MessageBody::System(format!("{nome} entrou no grupo")),
+                        status: None,
+                        reply: None,
+                    };
+                    self.store_and_emit(msg, None, false)?;
+                }
+                let _ = self.events.send(EngineEvent::GroupsChanged);
+            }
+            AppMessage::GroupLeave if !from_me => {
+                let nome = g.meta.name_of(author).unwrap_or("Alguém").to_string();
+                g.meta.members.retain(|m| m != author);
+                g.meta.admins.retain(|m| m != author);
+                self.save_group(&g)?;
+                self.state.lock().unwrap().groups.insert(g.lid.clone(), g.clone());
+                let msg = Message {
+                    id: format!("sys-leave-{ts_ms}-{}", &author[..8.min(author.len())]),
+                    chat: chat.into(),
+                    author: author.into(),
+                    from_me: false,
+                    ts: ts_ms,
+                    body: MessageBody::System(format!("{nome} saiu do grupo")),
+                    status: None,
+                    reply: None,
+                };
+                self.store_and_emit(msg, None, false)?;
+                let _ = self.events.send(EngineEvent::GroupsChanged);
+            }
+            AppMessage::GroupMeta { meta, ver } if !from_me => {
+                // Só quem manda no grupo pode mudar os dados dele, e a versão
+                // tem que ser mais nova: senão um membro comum reescreveria o
+                // grupo inteiro, ou uma mensagem antiga desfaria uma mudança.
+                if !g.meta.is_admin(author) || ver <= g.ver {
+                    return Ok(());
+                }
+                let Ok(nova): std::result::Result<GroupMeta, _> = serde_json::from_value(meta) else {
+                    return Ok(());
+                };
+                let Some(nova) = nova.sanitize(&g.meta.owner) else { return Ok(()) };
+                if nova.owner != g.meta.owner && author != g.meta.owner {
+                    return Ok(());
+                }
+                // Canais de texto que sumiram levam as mensagens junto.
+                let removidos: Vec<String> = g
+                    .meta
+                    .text_channels()
+                    .filter(|c| !nova.channels.iter().any(|x| x.id == c.id))
+                    .map(|c| c.id.clone())
+                    .collect();
+                g.meta = nova;
+                g.ver = ver;
+                self.save_group(&g)?;
+                self.state.lock().unwrap().groups.insert(g.lid.clone(), g.clone());
+
+                for ch in removidos {
+                    let key = ChatKey::Channel { lid: g.lid.clone(), channel: ch }.as_string();
+                    let store = self.store.lock().unwrap();
+                    store.delete_chat_msgs(&key)?;
+                    store
+                        .raw()
+                        .execute("DELETE FROM chats WHERE key = ?1", rusqlite::params![key])
+                        .map_err(crate::store::StoreError::from)?;
+                }
+                for ch in g.meta.text_channels() {
+                    self.ensure_chat(&ChatKey::Channel { lid: g.lid.clone(), channel: ch.id.clone() }.as_string())?;
+                }
+                let _ = self.events.send(EngineEvent::GroupsChanged);
+                let _ = self.events.send(EngineEvent::ChatsChanged);
+            }
+            AppMessage::GroupPic { p, v } if !from_me => {
+                if !g.meta.is_admin(author) || v <= g.pic_v {
+                    return Ok(());
+                }
+                g.pic = (!p.is_empty()).then_some(p);
+                g.pic_v = v;
+                self.save_group(&g)?;
+                self.state.lock().unwrap().groups.insert(g.lid.clone(), g.clone());
+                let _ = self.events.send(EngineEvent::GroupsChanged);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Guarda um convite recebido. A pessoa só entra quando aceitar.
+    fn store_invite(
+        &self,
+        convite: crate::messages::GroupInvite,
+        de: &str,
+        chat: &str,
+        ts_ms: i64,
+    ) -> Result<()> {
+        let Ok(meta): std::result::Result<GroupMeta, _> = serde_json::from_value(convite.meta.clone())
+        else {
+            return Ok(());
+        };
+        let Some(meta) = meta.sanitize("") else { return Ok(()) };
+        let Ok(keys) = Keys::parse(&convite.sk) else { return Ok(()) };
+        let pk = keys.public_key().to_hex();
+        let lid = meta.lid.clone().unwrap_or_else(|| pk.clone());
+
+        // Já participo: não há o que aceitar de novo.
+        if self.state.lock().unwrap().groups.contains_key(&lid) {
+            return Ok(());
+        }
+
+        let g = Group {
+            lid: lid.clone(),
+            pk,
+            sk: convite.sk,
+            old_keys: Vec::new(),
+            meta,
+            ver: convite.ver,
+            pic: (!convite.pic.is_empty()).then_some(convite.pic),
+            pic_v: convite.pic_v,
+            muted: false,
+            joined_at: 0, // 0 marca convite ainda não aceito
+        };
+        self.save_group(&g)?;
+        self.state.lock().unwrap().groups.insert(lid.clone(), g.clone());
+
+        let msg = Message {
+            id: format!("inv-{lid}"),
+            chat: chat.into(),
+            author: de.into(),
+            from_me: false,
+            ts: ts_ms,
+            body: MessageBody::Invite { lid, name: g.meta.name.clone() },
+            status: None,
+            reply: None,
+        };
+        self.store_and_emit(msg, None, true)?;
+        let _ = self.events.send(EngineEvent::GroupsChanged);
+        Ok(())
+    }
+
+    fn save_group(&self, g: &Group) -> Result<()> {
+        let store = self.store.lock().unwrap();
+        store
+            .raw()
+            .execute(
+                "INSERT INTO groups (lid, pk, sk, old_keys, meta, ver, pic, pic_v, pics, gone, muted, joined_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'{}','[]',?9,?10)
+                 ON CONFLICT(lid) DO UPDATE SET pk=?2, sk=?3, old_keys=?4, meta=?5, ver=?6,
+                                                pic=?7, pic_v=?8, muted=?9",
+                rusqlite::params![
+                    g.lid, g.pk, g.sk,
+                    serde_json::to_string(&g.old_keys).unwrap_or_else(|_| "[]".into()),
+                    serde_json::to_string(&g.meta).unwrap_or_default(),
+                    g.ver as i64, g.pic, g.pic_v as i64, g.muted as i64, g.joined_at
+                ],
+            )
+            .map_err(crate::store::StoreError::from)?;
+        Ok(())
+    }
+
+    /// Reassina a caixa de entrada: usado quando a lista de grupos muda.
+    async fn resubscribe(self: &Arc<Self>) {
+        let since: i64 = self
+            .store
+            .lock()
+            .unwrap()
+            .get_kv("last_sync")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| now_secs() - 86_400);
+        let _ = self
+            .pool
+            .subscribe_inbox(&self.inbox_keys(), Timestamp::from_secs(since.max(0) as u64))
+            .await;
     }
 
     /// Garante que a conversa aparece na lista, mesmo sem nenhuma mensagem.
@@ -895,7 +1394,25 @@ impl Engine {
         Ok(rows
             .into_iter()
             .map(|(key, kind, peer, ts, text, status, from, unread, pinned, muted)| ChatSummary {
-                title: peer.as_deref().map(|p| self.name_of(p)).unwrap_or_else(|| "Grupo".into()),
+                title: match (&peer, ChatKey::parse(&key)) {
+                    (Some(p), _) => self.name_of(p),
+                    (None, Some(ChatKey::Channel { lid, channel })) => {
+                        match self.group(&lid) {
+                            Some(g) => {
+                                let nome_canal = g
+                                    .meta
+                                    .channels
+                                    .iter()
+                                    .find(|c| c.id == channel)
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or(channel);
+                                format!("{} · #{}", g.meta.name, nome_canal)
+                            }
+                            None => "Grupo".into(),
+                        }
+                    }
+                    _ => "Grupo".into(),
+                },
                 is_group: kind == "group",
                 last_from_me: from.as_deref() == Some(eu.as_str()),
                 key,
@@ -1026,6 +1543,39 @@ fn load_contacts(store: &Store) -> Result<HashMap<String, Contact>> {
         .collect::<std::result::Result<_, _>>()
         .map_err(crate::store::StoreError::from)?;
     Ok(rows.into_iter().map(|c| (c.pk.clone(), c)).collect())
+}
+
+fn load_groups(store: &Store) -> Result<HashMap<String, Group>> {
+    let mut stmt = store
+        .raw()
+        .prepare("SELECT lid, pk, sk, old_keys, meta, ver, pic, pic_v, muted, joined_at FROM groups")
+        .map_err(crate::store::StoreError::from)?;
+    let linhas: Vec<Option<Group>> = stmt
+        .query_map([], |r| {
+            let meta_json: String = r.get(4)?;
+            let old_json: String = r.get(3)?;
+            let meta: Option<GroupMeta> = serde_json::from_str(&meta_json).ok();
+            Ok(meta.map(|meta| Group {
+                lid: r.get(0).unwrap_or_default(),
+                pk: r.get(1).unwrap_or_default(),
+                sk: r.get(2).unwrap_or_default(),
+                old_keys: serde_json::from_str(&old_json).unwrap_or_default(),
+                meta,
+                ver: r.get::<_, i64>(5).unwrap_or(1) as u64,
+                pic: r.get(6).unwrap_or(None),
+                pic_v: r.get::<_, i64>(7).unwrap_or(0) as u64,
+                muted: r.get::<_, i64>(8).unwrap_or(0) != 0,
+                joined_at: r.get(9).unwrap_or(0),
+            }))
+        })
+        .map_err(crate::store::StoreError::from)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(crate::store::StoreError::from)?;
+    Ok(linhas
+        .into_iter()
+        .flatten()
+        .map(|g| (g.lid.clone(), g))
+        .collect())
 }
 
 fn upsert_chat(store: &Store, msg: &Message, count_unread: bool) -> Result<()> {

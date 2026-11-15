@@ -12,6 +12,7 @@ use iced::{Alignment, Element, Length, Subscription, Task};
 use jm_core::engine::{
     ChatSummary, ContactStatus, Engine, EngineEvent, Message as CoreMessage, MessageBody, Settings,
 };
+use jm_core::groups::{Group, Template};
 use jm_core::identity;
 use jm_core::relays::RelayStatus;
 use jm_core::store::Store;
@@ -30,8 +31,20 @@ pub enum Screen {
     Main(Box<MainState>),
 }
 
+/// Qual seção está aberta na barra de navegação.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Section {
+    /// Conversas de duas pessoas.
+    Direct,
+    /// Um grupo, com seus canais.
+    Group(String),
+}
+
 pub struct MainState {
     engine: Arc<Engine>,
+    section: Section,
+    groups: Vec<Group>,
+    new_group: Option<String>,
     chats: Vec<ChatSummary>,
     open_chat: Option<String>,
     messages: Vec<CoreMessage>,
@@ -41,6 +54,7 @@ pub struct MainState {
     typing: HashMap<String, i64>,
     add_contact: String,
     show_add: bool,
+    show_invite: bool,
     error: Option<String>,
     copied: bool,
 }
@@ -78,6 +92,15 @@ pub enum Msg {
     AddContactChanged(String),
     ConfirmAddContact,
     CopyMyCode,
+    SelectSection(Section),
+    ToggleNewGroup,
+    NewGroupChanged(String),
+    ConfirmNewGroup(Template),
+    GroupsReloaded(Vec<Group>),
+    AcceptInvite(String),
+    ToggleInvite,
+    InviteContact(String, String),
+    LeaveGroup(String),
     Tick,
     Noop,
 }
@@ -222,8 +245,12 @@ impl App {
             Msg::Started(Ok(ok)) => {
                 self.busy = false;
                 let engine = Arc::clone(&ok.engine);
+                let groups = ok.engine.groups();
                 self.screen = Screen::Main(Box::new(MainState {
                     engine,
+                    section: Section::Direct,
+                    groups,
+                    new_group: None,
                     chats: ok.chats,
                     open_chat: None,
                     messages: Vec::new(),
@@ -232,6 +259,7 @@ impl App {
                     typing: HashMap::new(),
                     add_contact: String::new(),
                     show_add: false,
+                    show_invite: false,
                     error: None,
                     copied: false,
                 }));
@@ -291,6 +319,14 @@ impl App {
                 EngineEvent::ContactChanged { .. } => {
                     let e = Arc::clone(&m.engine);
                     Task::perform(async move { e.chat_list().unwrap_or_default() }, Msg::ChatsReloaded)
+                }
+                EngineEvent::GroupsChanged => {
+                    let e = Arc::clone(&m.engine);
+                    let e2 = Arc::clone(&m.engine);
+                    Task::batch([
+                        Task::perform(async move { e.groups() }, Msg::GroupsReloaded),
+                        Task::perform(async move { e2.chat_list().unwrap_or_default() }, Msg::ChatsReloaded),
+                    ])
                 }
             },
             Msg::ChatsReloaded(c) => {
@@ -375,6 +411,80 @@ impl App {
             Msg::CopyMyCode => {
                 m.copied = true;
                 iced::clipboard::write(m.engine.npub())
+            }
+            Msg::SelectSection(sec) => {
+                m.section = sec;
+                m.open_chat = None;
+                m.messages.clear();
+                // Ao abrir um grupo, já entra no primeiro canal de texto.
+                if let Section::Group(lid) = &m.section {
+                    if let Some(g) = m.groups.iter().find(|g| &g.lid == lid) {
+                        if let Some(ch) = g.meta.text_channels().next() {
+                            let key = format!("g:{}:{}", g.lid, ch.id);
+                            return Task::done(Msg::SelectChat(key));
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Msg::ToggleNewGroup => {
+                m.new_group = if m.new_group.is_some() { None } else { Some(String::new()) };
+                Task::none()
+            }
+            Msg::NewGroupChanged(v) => {
+                if let Some(n) = &mut m.new_group {
+                    *n = v;
+                }
+                Task::none()
+            }
+            Msg::ConfirmNewGroup(tpl) => {
+                let Some(nome) = m.new_group.clone() else { return Task::none() };
+                let nome = nome.trim().to_string();
+                if nome.len() < 2 {
+                    m.error = Some("Dê um nome ao grupo.".into());
+                    return Task::none();
+                }
+                m.new_group = None;
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move { e.create_group(&nome, tpl).await.map(|_| ()).map_err(|e| e.to_string()) },
+                    Msg::Sent,
+                )
+            }
+            Msg::ToggleInvite => {
+                m.show_invite = !m.show_invite;
+                Task::none()
+            }
+            Msg::InviteContact(lid, pk) => {
+                m.show_invite = false;
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move {
+                        e.invite_to_group(&lid, &pk).await.map(|_| ()).map_err(|e| e.to_string())
+                    },
+                    Msg::Sent,
+                )
+            }
+            Msg::LeaveGroup(lid) => {
+                m.section = Section::Direct;
+                m.open_chat = None;
+                m.messages.clear();
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move { e.leave_group(&lid).await.map(|_| ()).map_err(|e| e.to_string()) },
+                    Msg::Sent,
+                )
+            }
+            Msg::GroupsReloaded(g) => {
+                m.groups = g;
+                Task::none()
+            }
+            Msg::AcceptInvite(lid) => {
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move { e.accept_invite(&lid).await.map(|_| ()).map_err(|e| e.to_string()) },
+                    Msg::Sent,
+                )
             }
             Msg::Tick => {
                 let agora = jm_core::engine::now_ms();
@@ -552,49 +662,150 @@ fn view_main(m: &MainState) -> Element<'_, Msg> {
         .into()
 }
 
-/// Coluna da esquerda: navegação entre seções.
+/// Coluna da esquerda: conversas diretas, grupos e o botão de criar grupo.
 fn rail(m: &MainState) -> Element<'_, Msg> {
     let conectados = m.relays.iter().filter(|r| r.connected).count();
     let cor = if conectados > 0 { t::ACCENT } else { t::WARN };
 
-    container(
-        column![
-            container(text("J").size(22).color(t::ACCENT_INK))
+    let mut itens = column![
+        container(text("J").size(22).color(t::ACCENT_INK))
+            .width(44)
+            .height(44)
+            .center_x(44)
+            .center_y(44)
+            .style(t::fill(t::ACCENT)),
+        Space::new().height(8),
+        button(text("💬").size(18).center())
+            .width(44)
+            .height(44)
+            .style(t::rail_item(m.section == Section::Direct))
+            .on_press(Msg::SelectSection(Section::Direct)),
+    ]
+    .align_x(Alignment::Center)
+    .spacing(6);
+
+    // Um ícone por grupo em que você já entrou.
+    for g in m.groups.iter().filter(|g| g.joined_at > 0) {
+        let aberto = m.section == Section::Group(g.lid.clone());
+        itens = itens.push(
+            button(text(t::initials(&g.meta.name)).size(14).center())
                 .width(44)
                 .height(44)
-                .center_x(44)
-                .center_y(44)
-                .style(t::fill(t::ACCENT)),
-            Space::new().height(10),
-            button(text("💬").size(19).center())
-                .width(44)
-                .height(44)
-                .style(t::rail_item(true))
-                .on_press(Msg::Noop),
-            button(text("＋").size(19).center())
-                .width(44)
-                .height(44)
-                .style(t::rail_item(false))
-                .on_press(Msg::ToggleAddContact),
-            Space::new().height(Length::Fill),
-            container(text("●").size(13).color(cor))
-                .width(44)
-                .center_x(44),
+                .style(t::rail_item(aberto))
+                .on_press(Msg::SelectSection(Section::Group(g.lid.clone()))),
+        );
+    }
+
+    itens = itens.push(
+        button(text("＋").size(18).center())
+            .width(44)
+            .height(44)
+            .style(t::rail_item(false))
+            .on_press(Msg::ToggleNewGroup),
+    );
+    itens = itens.push(Space::new().height(Length::Fill));
+    itens = itens.push(container(text("●").size(13).color(cor)).width(44).center_x(44));
+    itens = itens.push(Space::new().height(6));
+
+    container(scrollable(itens).height(Length::Fill).style(t::scroll))
+        .width(72)
+        .height(Length::Fill)
+        .padding(10)
+        .style(t::fill(t::RAIL))
+        .into()
+}
+
+/// Coluna do meio: conversas diretas ou os canais do grupo aberto.
+fn sidebar(m: &MainState) -> Element<'_, Msg> {
+    let (titulo, mut lista) = match &m.section {
+        Section::Direct => ("Conversas".to_string(), direct_list(m)),
+        Section::Group(lid) => match m.groups.iter().find(|g| &g.lid == lid) {
+            Some(g) => (g.meta.name.clone(), channel_list(m, g)),
+            None => ("Grupo".to_string(), column![]),
+        },
+    };
+
+    if let Some(nome) = &m.new_group {
+        let mut modelos = row![].spacing(5);
+        for tpl in Template::all() {
+            modelos = modelos.push(
+                button(text(tpl.label()).size(11.5).center())
+                    .on_press(Msg::ConfirmNewGroup(tpl))
+                    .padding(6)
+                    .style(t::ghost),
+            );
+        }
+        lista = column![
+            container(
+                column![
+                    text("Novo grupo").size(13).color(t::FG),
+                    text_input("Nome do grupo", nome)
+                        .on_input(Msg::NewGroupChanged)
+                        .padding(9)
+                        .size(13)
+                        .style(t::input),
+                    text("Escolha um modelo de canais:").size(11.5).color(t::FG_FAINT),
+                    modelos,
+                ]
+                .spacing(7),
+            )
+            .padding(10)
+            .style(t::panel),
             Space::new().height(8),
         ]
-        .align_x(Alignment::Center)
-        .spacing(6),
+        .push(lista);
+    }
+
+    let conectados = m.relays.iter().filter(|r| r.connected).count();
+    let total = m.relays.len();
+    let estado = if total == 0 {
+        "conectando…".to_string()
+    } else if conectados == 0 {
+        "sem conexão".to_string()
+    } else {
+        format!("{conectados} de {total} servidores")
+    };
+
+    container(
+        column![
+            container(text(titulo).size(15).color(t::FG))
+                .padding(iced::Padding::from([14, 14]))
+                .width(Length::Fill),
+            scrollable(lista.padding(iced::Padding::from([0, 8])))
+                .height(Length::Fill)
+                .style(t::scroll),
+            container(
+                row![
+                    container(text(t::initials(&m.engine.me().name)).size(13))
+                        .width(34)
+                        .height(34)
+                        .center_x(34)
+                        .center_y(34)
+                        .style(t::avatar(m.engine.me().tone)),
+                    column![
+                        text(m.engine.me().name.clone()).size(13.5).color(t::FG),
+                        text(estado).size(11.5).color(t::FG_FAINT),
+                    ]
+                    .spacing(1)
+                    .width(Length::Fill),
+                ]
+                .spacing(9)
+                .align_y(Alignment::Center),
+            )
+            .padding(10)
+            .style(t::fill(t::RAIL)),
+        ]
+        .height(Length::Fill),
     )
-    .width(72)
+    .width(260)
     .height(Length::Fill)
-    .padding(10)
-    .style(t::fill(t::RAIL))
+    .style(t::fill(t::SIDEBAR))
     .into()
 }
 
-/// Coluna do meio: conversas e barra do usuário.
-fn sidebar(m: &MainState) -> Element<'_, Msg> {
-    let mut lista = column![].spacing(2).padding(iced::Padding::from([0, 8]));
+/// Lista de conversas de duas pessoas.
+fn direct_list(m: &MainState) -> iced::widget::Column<'_, Msg> {
+    let mut lista = column![].spacing(2);
 
     if m.show_add {
         lista = lista.push(
@@ -630,118 +841,224 @@ fn sidebar(m: &MainState) -> Element<'_, Msg> {
             .style(t::panel),
         );
         lista = lista.push(Space::new().height(8));
+    } else {
+        lista = lista.push(
+            button(text("＋  Adicionar contato").size(12.5))
+                .on_press(Msg::ToggleAddContact)
+                .width(Length::Fill)
+                .padding(8)
+                .style(t::ghost),
+        );
+        lista = lista.push(Space::new().height(4));
     }
 
-    if m.chats.is_empty() {
+    let diretas: Vec<&ChatSummary> = m.chats.iter().filter(|c| !c.is_group).collect();
+    if diretas.is_empty() {
         lista = lista.push(
             container(
-                column![
-                    text("Nenhuma conversa ainda").size(14).color(t::FG_DIM),
-                    text("Adicione alguém pelo código para começar.")
-                        .size(12.5)
-                        .color(t::FG_FAINT),
-                ]
-                .spacing(6),
+                text("Nenhuma conversa ainda. Adicione alguém pelo código.")
+                    .size(12.5)
+                    .color(t::FG_FAINT),
             )
-            .padding(14),
+            .padding(12),
         );
     }
+    for c in diretas {
+        lista = lista.push(chat_row(m, c, &c.title));
+    }
+    lista
+}
 
-    for c in &m.chats {
-        let selecionado = m.open_chat.as_deref() == Some(c.key.as_str());
-        let digitando = m
-            .typing
-            .get(&c.key)
-            .is_some_and(|ate| *ate > jm_core::engine::now_ms());
+/// Canais do grupo aberto, separados por tipo.
+fn channel_list<'a>(m: &'a MainState, g: &'a Group) -> iced::widget::Column<'a, Msg> {
+    let mut lista = column![].spacing(2);
 
-        let previa = if digitando {
-            text("digitando…").size(12.5).color(t::ACCENT)
+    let admin = g.meta.is_admin(&m.engine.public_key().to_hex());
+    lista = lista.push(
+        row![
+            button(text(if m.show_invite { "Fechar" } else { "＋ Convidar" }).size(12).center())
+                .on_press(Msg::ToggleInvite)
+                .padding(7)
+                .style(t::ghost),
+            button(text("Sair").size(12).center())
+                .on_press(Msg::LeaveGroup(g.lid.clone()))
+                .padding(7)
+                .style(t::ghost),
+        ]
+        .spacing(6),
+    );
+
+    if m.show_invite {
+        let mut picks = column![text("Quem você quer convidar?").size(12).color(t::FG_DIM)].spacing(4);
+        let candidatos: Vec<_> = m
+            .engine
+            .contacts()
+            .into_iter()
+            .filter(|c| c.status == ContactStatus::Ok && !g.meta.members.contains(&c.pk))
+            .collect();
+        if candidatos.is_empty() {
+            picks = picks.push(
+                text("Nenhum contato disponível. Adicione alguém pelo código primeiro.")
+                    .size(11.5)
+                    .color(t::FG_FAINT),
+            );
+        }
+        for c in candidatos {
+            picks = picks.push(
+                button(text(c.display_name()).size(13))
+                    .on_press(Msg::InviteContact(g.lid.clone(), c.pk.clone()))
+                    .width(Length::Fill)
+                    .padding(7)
+                    .style(t::row_item(false)),
+            );
+        }
+        lista = lista.push(Space::new().height(6));
+        lista = lista.push(container(picks).padding(10).style(t::panel));
+    }
+
+    if admin {
+        lista = lista.push(Space::new().height(4));
+    }
+
+    lista = lista.push(
+        container(text("CANAIS DE TEXTO").size(11).color(t::FG_FAINT))
+            .padding(iced::Padding::from([8, 6])),
+    );
+    for ch in g.meta.text_channels() {
+        let key = format!("g:{}:{}", g.lid, ch.id);
+        match m.chats.iter().find(|c| c.key == key) {
+            Some(c) => lista = lista.push(chat_row(m, c, &format!("# {}", ch.name))),
+            None => {
+                lista = lista.push(
+                    button(text(format!("# {}", ch.name)).size(14))
+                        .on_press(Msg::SelectChat(key))
+                        .width(Length::Fill)
+                        .padding(8)
+                        .style(t::row_item(false)),
+                )
+            }
+        }
+    }
+
+    let vozes: Vec<_> = g.meta.voice_channels().collect();
+    if !vozes.is_empty() {
+        lista = lista.push(
+            container(text("CANAIS DE VOZ").size(11).color(t::FG_FAINT))
+                .padding(iced::Padding { top: 12.0, right: 6.0, bottom: 4.0, left: 6.0 }),
+        );
+        for ch in vozes {
+            // A sala de voz ainda não está ligada: o botão não finge funcionar.
+            lista = lista.push(
+                container(
+                    row![
+                        text("🔊").size(13),
+                        text(ch.name.clone()).size(14).color(t::FG_FAINT),
+                        space().width(Length::Fill),
+                        text("em breve").size(10.5).color(t::FG_FAINT),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding(8)
+                .width(Length::Fill),
+            );
+        }
+    }
+
+    let n = g.meta.members.len();
+    lista = lista.push(Space::new().height(12));
+    lista = lista.push(
+        container(
+            text(format!("{n} {}", if n == 1 { "membro" } else { "membros" }))
+                .size(11.5)
+                .color(t::FG_FAINT),
+        )
+        .padding(iced::Padding::from([4, 6])),
+    );
+    for pk in g.meta.members.iter().take(30) {
+        let nome = g
+            .meta
+            .name_of(pk)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| m.engine.name_of(pk));
+        let papel = if g.meta.owner == *pk {
+            " · dono"
+        } else if g.meta.is_admin(pk) {
+            " · admin"
         } else {
-            let p = if c.last_from_me {
-                format!("Você: {}", c.last_text)
-            } else {
-                c.last_text.clone()
-            };
-            text(ellipsis(&p, 34)).size(12.5).color(t::FG_FAINT)
+            ""
         };
+        lista = lista.push(
+            container(
+                row![
+                    container(text(t::initials(&nome)).size(11))
+                        .width(26)
+                        .height(26)
+                        .center_x(26)
+                        .center_y(26)
+                        .style(t::avatar(0)),
+                    text(format!("{nome}{papel}")).size(13).color(t::FG_DIM),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding(iced::Padding::from([4, 6])),
+        );
+    }
+    lista
+}
 
-        let mut linha = row![
-            container(text(t::initials(&c.title)).size(13))
+/// Uma linha da lista, usada tanto para conversas quanto para canais.
+fn chat_row<'a>(m: &'a MainState, c: &'a ChatSummary, rotulo: &str) -> Element<'a, Msg> {
+    let selecionado = m.open_chat.as_deref() == Some(c.key.as_str());
+    let digitando = m
+        .typing
+        .get(&c.key)
+        .is_some_and(|ate| *ate > jm_core::engine::now_ms());
+
+    let previa = if digitando {
+        text("digitando…").size(12.5).color(t::ACCENT)
+    } else if c.last_text.is_empty() {
+        text("sem mensagens").size(12.5).color(t::FG_FAINT)
+    } else {
+        let p = if c.last_from_me {
+            format!("Você: {}", c.last_text)
+        } else {
+            c.last_text.clone()
+        };
+        text(ellipsis(&p, 32)).size(12.5).color(t::FG_FAINT)
+    };
+
+    let mut linha = row![].spacing(10).align_y(Alignment::Center);
+    if !c.is_group {
+        linha = linha.push(
+            container(text(t::initials(rotulo)).size(13))
                 .width(36)
                 .height(36)
                 .center_x(36)
                 .center_y(36)
                 .style(t::avatar(0)),
-            column![
-                text(ellipsis(&c.title, 22)).size(14.5).color(t::FG),
-                previa,
-            ]
+        );
+    }
+    linha = linha.push(
+        column![text(ellipsis(rotulo, 24)).size(14.5).color(t::FG), previa]
             .spacing(2)
             .width(Length::Fill),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-
-        if c.unread > 0 {
-            linha = linha.push(
-                container(text(c.unread.to_string()).size(11))
-                    .padding(iced::Padding::from([2, 7]))
-                    .style(t::badge),
-            );
-        }
-
-        lista = lista.push(
-            button(linha)
-                .on_press(Msg::SelectChat(c.key.clone()))
-                .width(Length::Fill)
-                .padding(8)
-                .style(t::row_item(selecionado)),
+    );
+    if c.unread > 0 {
+        linha = linha.push(
+            container(text(c.unread.to_string()).size(11))
+                .padding(iced::Padding::from([2, 7]))
+                .style(t::badge),
         );
     }
 
-    let conectados = m.relays.iter().filter(|r| r.connected).count();
-    let total = m.relays.len();
-    let estado = if total == 0 {
-        "conectando…".to_string()
-    } else if conectados == 0 {
-        "sem conexão".to_string()
-    } else {
-        format!("{conectados} de {total} servidores")
-    };
-
-    container(
-        column![
-            container(text("Conversas").size(15).color(t::FG))
-                .padding(iced::Padding::from([14, 14]))
-                .width(Length::Fill),
-            scrollable(lista).height(Length::Fill).style(t::scroll),
-            container(
-                row![
-                    container(text(t::initials(&m.engine.me().name)).size(13))
-                        .width(34)
-                        .height(34)
-                        .center_x(34)
-                        .center_y(34)
-                        .style(t::avatar(m.engine.me().tone)),
-                    column![
-                        text(m.engine.me().name.clone()).size(13.5).color(t::FG),
-                        text(estado).size(11.5).color(t::FG_FAINT),
-                    ]
-                    .spacing(1)
-                    .width(Length::Fill),
-                ]
-                .spacing(9)
-                .align_y(Alignment::Center),
-            )
-            .padding(10)
-            .style(t::fill(t::RAIL)),
-        ]
-        .height(Length::Fill),
-    )
-    .width(260)
-    .height(Length::Fill)
-    .style(t::fill(t::SIDEBAR))
-    .into()
+    button(linha)
+        .on_press(Msg::SelectChat(c.key.clone()))
+        .width(Length::Fill)
+        .padding(8)
+        .style(t::row_item(selecionado))
+        .into()
 }
 
 /// Coluna principal: cabeçalho, mensagens e campo de escrita.
@@ -801,11 +1118,36 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
                 let primeira = autor_anterior != Some(msg.author.as_str());
                 autor_anterior = Some(&msg.author);
 
+                if let MessageBody::Invite { lid, name } = corpo {
+                    let ja_entrou = m.groups.iter().any(|g| &g.lid == lid && g.joined_at > 0);
+                    lista = lista.push(
+                        container(
+                            column![
+                                text(format!("Convite para o grupo {name}")).size(14).color(t::FG),
+                                if ja_entrou {
+                                    Element::from(text("Você já está neste grupo.").size(12).color(t::FG_FAINT))
+                                } else {
+                                    Element::from(
+                                        button(text("Entrar no grupo").size(13).center())
+                                            .on_press(Msg::AcceptInvite(lid.clone()))
+                                            .padding(9)
+                                            .style(t::primary),
+                                    )
+                                },
+                            ]
+                            .spacing(8),
+                        )
+                        .padding(12)
+                        .max_width(380)
+                        .style(t::panel),
+                    );
+                    continue;
+                }
                 let conteudo = match corpo {
                     MessageBody::Text(txt) => txt.clone(),
                     MessageBody::Sound { id } => format!("🔊 Som do soundboard: {id}"),
                     MessageBody::Deleted => "Mensagem apagada".into(),
-                    MessageBody::System(_) => unreachable!(),
+                    MessageBody::Invite { .. } | MessageBody::System(_) => unreachable!(),
                 };
 
                 let marca = match msg.status {
@@ -836,6 +1178,20 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
 
                 if primeira && !msg.from_me {
                     lista = lista.push(Space::new().height(5));
+                    if let Some(jm_core::messages::ChatKey::Channel { lid, .. }) =
+                        jm_core::messages::ChatKey::parse(&msg.chat)
+                    {
+                        let nome = m
+                            .groups
+                            .iter()
+                            .find(|g| g.lid == lid)
+                            .and_then(|g| g.meta.name_of(&msg.author).map(|s| s.to_string()))
+                            .unwrap_or_else(|| m.engine.name_of(&msg.author));
+                        lista = lista.push(
+                            container(text(nome).size(12).color(t::ACCENT))
+                                .padding(iced::Padding::from([0, 2])),
+                        );
+                    }
                 }
 
                 lista = lista.push(if msg.from_me {

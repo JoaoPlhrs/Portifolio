@@ -325,3 +325,15 @@ mod tests {
         assert_eq!(expiration_of(&aberto), Some(exp));
     }
 }
+
+/// Valor de uma marca em um evento já assinado (o envelope).
+pub fn tag_value_event<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+    event.tags.iter().find_map(|t| {
+        let s = t.as_slice();
+        if s.first().map(|x| x.as_str()) == Some(name) {
+            s.get(1).map(|x| x.as_str())
+        } else {
+            None
+        }
+    })
+}
