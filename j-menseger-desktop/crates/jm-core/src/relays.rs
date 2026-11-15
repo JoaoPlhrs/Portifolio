@@ -89,7 +89,7 @@ impl RelayPool {
 
     /// Espera até pelo menos um servidor responder, ou desistir no prazo.
     pub async fn wait_connected(&self, timeout: Duration) -> bool {
-        self.client.wait_for_connection(timeout).await;
+        self.client.connect().and_wait(timeout).await;
         self.open_count().await > 0
     }
 

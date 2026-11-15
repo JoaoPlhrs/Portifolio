@@ -3,7 +3,9 @@
 //! Este módulo não conhece a interface e roda sem janela, o que permite testá-lo
 //! com clientes reais em linha de comando.
 
+pub mod engine;
 pub mod identity;
+pub mod messages;
 pub mod protocol;
 pub mod relays;
 pub mod store;

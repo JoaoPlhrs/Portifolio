@@ -1,0 +1,426 @@
+//! Tipos de mensagem internos do J-Menseger.
+//!
+//! Dentro do envelope cifrado existem três formatos de rumor:
+//!
+//! - **kind 14** — texto puro, no campo `content`.
+//! - **kind 7** — reação; `content` é o emoji e a marca `e` aponta a mensagem.
+//! - **kind 1400** — mensagem interna do aplicativo; `content` é um JSON cujo
+//!   campo `t` diz o que é.
+//!
+//! Os nomes curtos (`t`, `n`, `p`…) não são economia à toa: cada mensagem é
+//! cifrada duas vezes e vai em base64, então cada byte poupado aqui vira três
+//! bytes a menos no envelope, e o limite dos servidores é de 64 KB por evento.
+
+use serde::{Deserialize, Serialize};
+
+/// Como uma conversa é identificada, tanto na tela quanto no banco.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChatKey {
+    /// Conversa de duas pessoas: `dm:<chave pública>`.
+    Direct { peer: String },
+    /// Canal de um grupo: `g:<id do grupo>:<id do canal>`.
+    Channel { lid: String, channel: String },
+}
+
+impl ChatKey {
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(pk) = s.strip_prefix("dm:") {
+            if pk.len() == 64 && pk.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(ChatKey::Direct { peer: pk.to_string() });
+            }
+            return None;
+        }
+        let rest = s.strip_prefix("g:")?;
+        let (lid, ch) = rest.split_once(':')?;
+        if lid.len() != 64 || ch.is_empty() {
+            return None;
+        }
+        Some(ChatKey::Channel {
+            lid: lid.to_string(),
+            channel: ch.to_string(),
+        })
+    }
+
+    pub fn as_string(&self) -> String {
+        match self {
+            ChatKey::Direct { peer } => format!("dm:{peer}"),
+            ChatKey::Channel { lid, channel } => format!("g:{lid}:{channel}"),
+        }
+    }
+
+    pub fn is_group(&self) -> bool {
+        matches!(self, ChatKey::Channel { .. })
+    }
+}
+
+impl std::fmt::Display for ChatKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_string())
+    }
+}
+
+/// Estado de entrega de uma mensagem enviada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    /// Ainda não saiu do aparelho.
+    Pending,
+    /// Algum servidor aceitou.
+    Sent,
+    /// O aparelho da outra pessoa confirmou que recebeu.
+    Delivered,
+    /// A outra pessoa abriu a conversa.
+    Read,
+}
+
+impl Delivery {
+    /// O estado só anda para frente: uma confirmação de entrega atrasada não
+    /// pode rebaixar uma mensagem que já foi lida.
+    pub fn advance(self, other: Delivery) -> Delivery {
+        if other > self {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// Mensagem interna do aplicativo (rumor de kind 1400).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "t")]
+pub enum AppMessage {
+    /// Perfil de quem envia: nome, recado, cor, foto e servidores preferidos.
+    #[serde(rename = "prof")]
+    Profile {
+        n: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        s: String,
+        #[serde(default)]
+        c: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        p: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        r: Vec<String>,
+    },
+    /// "Me manda seu perfil": enviado quando ainda não se conhece o nome.
+    #[serde(rename = "profreq")]
+    ProfileRequest,
+    /// Confirmação de entrega (`d`) ou de leitura (`r`).
+    #[serde(rename = "rcpt")]
+    Receipt { s: ReceiptKind, ids: Vec<String> },
+    /// "Digitando…". Vai sempre como efêmero.
+    #[serde(rename = "typ")]
+    Typing,
+    /// Apagar para todos.
+    #[serde(rename = "del")]
+    Delete { ids: Vec<String> },
+    /// Liga ou desliga mensagens temporárias (`v` em segundos, 0 desliga).
+    #[serde(rename = "ttl")]
+    Ttl { v: u32 },
+    /// Cabeçalho de uma mídia, seguido pelos blocos.
+    #[serde(rename = "mh")]
+    MediaHeader(MediaHeader),
+    /// Um bloco de mídia, em base64.
+    #[serde(rename = "mc")]
+    MediaChunk { mid: String, i: u32, d: String },
+    /// Som do soundboard de fábrica.
+    #[serde(rename = "snd")]
+    Sound { id: String },
+    /// Convite para um grupo, com a chave do grupo dentro.
+    #[serde(rename = "ginv")]
+    GroupInvite { g: GroupInvite },
+    /// O grupo trocou de chave (alguém foi removido).
+    #[serde(rename = "grekey")]
+    GroupRekey {
+        lid: String,
+        old: String,
+        sk: String,
+        meta: serde_json::Value,
+        ver: u64,
+    },
+    /// Dados do grupo mudaram (nome, canais, membros).
+    #[serde(rename = "gmeta")]
+    GroupMeta { meta: serde_json::Value, ver: u64 },
+    /// Entrou no grupo, ou atualizou o próprio nome e foto nele.
+    #[serde(rename = "gjoin")]
+    GroupJoin {
+        n: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        p: Option<String>,
+    },
+    /// Saiu do grupo.
+    #[serde(rename = "gleave")]
+    GroupLeave,
+    /// Foto do grupo, com um número de versão para resolver conflitos.
+    #[serde(rename = "gpic")]
+    GroupPic {
+        #[serde(default)]
+        p: String,
+        v: u64,
+    },
+    /// Presença em sala de voz. Vai sempre como efêmero.
+    #[serde(rename = "room")]
+    Room { ch: String, a: Presence },
+    /// Sinalização de chamada. Efêmera, menos `missed`, que fica no histórico.
+    #[serde(rename = "call")]
+    Call(CallSignal),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReceiptKind {
+    /// Entregue.
+    #[serde(rename = "d")]
+    Delivered,
+    /// Lida.
+    #[serde(rename = "r")]
+    Read,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Presence {
+    Here,
+    Leave,
+}
+
+/// Cabeçalho de uma mídia fatiada em blocos.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaHeader {
+    pub mid: String,
+    #[serde(rename = "type")]
+    pub kind: MediaKind,
+    pub mime: String,
+    pub size: u64,
+    /// Quantos blocos esperar.
+    pub n: u32,
+    /// Hash do arquivo inteiro, para detectar bloco corrompido.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha: String,
+    /// Duração do áudio, em segundos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dur: Option<u32>,
+    /// Forma de onda para desenhar o áudio sem precisar baixá-lo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wf: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<u32>,
+    /// Miniatura embutida, para a foto aparecer antes de chegar inteira.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub th: Option<String>,
+    /// Quando o áudio é um som do soundboard criado pela pessoa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb: Option<SoundMeta>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    Audio,
+    Image,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SoundMeta {
+    pub n: String,
+    pub e: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupInvite {
+    /// Chave privada do grupo: quem tem isto lê o grupo.
+    pub sk: String,
+    pub meta: serde_json::Value,
+    pub ver: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pic: String,
+    /// O nome no fio é `picV`, como no aplicativo mobile.
+    #[serde(default, rename = "picV")]
+    pub pic_v: u64,
+}
+
+/// Sinalização de chamada, trocada por envelope efêmero.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CallSignal {
+    /// Identificador da chamada, para não confundir duas ao mesmo tempo.
+    pub cid: String,
+    pub a: CallAction,
+    /// Descrição da conexão WebRTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdp: Option<String>,
+    /// 1 quando é chamada de vídeo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CallAction {
+    Offer,
+    Answer,
+    Decline,
+    Busy,
+    End,
+    /// Única que fica guardada: vira "chamada perdida" no histórico.
+    Missed,
+}
+
+impl AppMessage {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("mensagem interna não serializou")
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        serde_json::from_str(s).ok()
+    }
+
+    /// Se esta mensagem deve ir em envelope efêmero (não guardada pelo servidor).
+    pub fn is_ephemeral(&self) -> bool {
+        match self {
+            AppMessage::Typing | AppMessage::Room { .. } => true,
+            AppMessage::Call(c) => c.a != CallAction::Missed,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chave_de_conversa_vai_e_volta() {
+        let pk = "a".repeat(64);
+        let dm = ChatKey::parse(&format!("dm:{pk}")).unwrap();
+        assert_eq!(dm, ChatKey::Direct { peer: pk.clone() });
+        assert_eq!(dm.as_string(), format!("dm:{pk}"));
+        assert!(!dm.is_group());
+
+        let g = ChatKey::parse(&format!("g:{pk}:geral")).unwrap();
+        assert_eq!(
+            g,
+            ChatKey::Channel { lid: pk.clone(), channel: "geral".into() }
+        );
+        assert!(g.is_group());
+        assert_eq!(g.as_string(), format!("g:{pk}:geral"));
+    }
+
+    #[test]
+    fn chave_de_conversa_malformada_e_recusada() {
+        assert!(ChatKey::parse("dm:curta").is_none());
+        assert!(ChatKey::parse("dm:zz").is_none());
+        assert!(ChatKey::parse("g:abc:geral").is_none(), "id de grupo curto");
+        assert!(ChatKey::parse(&format!("g:{}:", "a".repeat(64))).is_none(), "canal vazio");
+        assert!(ChatKey::parse("qualquer coisa").is_none());
+    }
+
+    #[test]
+    fn entrega_so_anda_para_frente() {
+        assert_eq!(Delivery::Sent.advance(Delivery::Read), Delivery::Read);
+        assert_eq!(
+            Delivery::Read.advance(Delivery::Delivered),
+            Delivery::Read,
+            "confirmação atrasada não pode rebaixar"
+        );
+        assert_eq!(Delivery::Pending.advance(Delivery::Sent), Delivery::Sent);
+    }
+
+    #[test]
+    fn mensagens_internas_vao_e_voltam_em_json() {
+        let casos: Vec<AppMessage> = vec![
+            AppMessage::Profile {
+                n: "Ana".into(),
+                s: "testando".into(),
+                c: 3,
+                p: Some("data:image/webp;base64,AAA".into()),
+                r: vec!["wss://nos.lol".into()],
+            },
+            AppMessage::ProfileRequest,
+            AppMessage::Receipt {
+                s: ReceiptKind::Read,
+                ids: vec!["a".repeat(64)],
+            },
+            AppMessage::Typing,
+            AppMessage::Ttl { v: 3600 },
+            AppMessage::Sound { id: "aplausos".into() },
+            AppMessage::GroupLeave,
+            AppMessage::GroupPic { p: String::new(), v: 7 },
+            AppMessage::Room { ch: "sala".into(), a: Presence::Here },
+            AppMessage::Call(CallSignal {
+                cid: "c1".into(),
+                a: CallAction::Offer,
+                sdp: Some("v=0".into()),
+                v: Some(1),
+            }),
+        ];
+        for m in casos {
+            let json = m.to_json();
+            let de = AppMessage::parse(&json)
+                .unwrap_or_else(|| panic!("não voltou de {json}"));
+            assert_eq!(de, m, "mudou ao ir e voltar: {json}");
+        }
+    }
+
+    #[test]
+    fn o_formato_no_fio_e_o_que_o_celular_espera() {
+        // Estes nomes de campo são o contrato com o aplicativo mobile.
+        // Mudar qualquer um deles quebra a conversa entre PC e celular.
+        let j = AppMessage::Typing.to_json();
+        assert_eq!(j, r#"{"t":"typ"}"#);
+
+        let j = AppMessage::Receipt { s: ReceiptKind::Delivered, ids: vec!["ab".into()] }.to_json();
+        assert_eq!(j, r#"{"t":"rcpt","s":"d","ids":["ab"]}"#);
+
+        let j = AppMessage::Ttl { v: 0 }.to_json();
+        assert_eq!(j, r#"{"t":"ttl","v":0}"#);
+
+        let j = AppMessage::MediaChunk { mid: "m1".into(), i: 2, d: "QQ==".into() }.to_json();
+        assert_eq!(j, r#"{"t":"mc","mid":"m1","i":2,"d":"QQ=="}"#);
+
+        let j = AppMessage::Room { ch: "voz".into(), a: Presence::Leave }.to_json();
+        assert_eq!(j, r#"{"t":"room","ch":"voz","a":"leave"}"#);
+    }
+
+    #[test]
+    fn cabecalho_de_midia_omite_o_que_nao_tem() {
+        let h = MediaHeader {
+            mid: "m1".into(),
+            kind: MediaKind::Image,
+            mime: "image/webp".into(),
+            size: 1000,
+            n: 1,
+            sha: "ab".into(),
+            dur: None,
+            wf: None,
+            w: Some(640),
+            h: Some(480),
+            th: None,
+            sb: None,
+        };
+        let j = AppMessage::MediaHeader(h.clone()).to_json();
+        assert!(!j.contains("\"dur\""), "campo vazio não deve ocupar espaço: {j}");
+        assert!(!j.contains("\"th\""));
+        assert!(j.contains(r#""type":"image""#));
+        match AppMessage::parse(&j).unwrap() {
+            AppMessage::MediaHeader(v) => assert_eq!(v, h),
+            outro => panic!("voltou errado: {outro:?}"),
+        }
+    }
+
+    #[test]
+    fn sabe_o_que_vai_como_efemero() {
+        assert!(AppMessage::Typing.is_ephemeral());
+        assert!(AppMessage::Room { ch: "x".into(), a: Presence::Here }.is_ephemeral());
+        let oferta = CallSignal { cid: "c".into(), a: CallAction::Offer, sdp: None, v: None };
+        assert!(AppMessage::Call(oferta).is_ephemeral());
+
+        let perdida = CallSignal { cid: "c".into(), a: CallAction::Missed, sdp: None, v: None };
+        assert!(
+            !AppMessage::Call(perdida).is_ephemeral(),
+            "chamada perdida precisa ficar no histórico"
+        );
+        assert!(!AppMessage::Ttl { v: 1 }.is_ephemeral());
+        assert!(!AppMessage::ProfileRequest.is_ephemeral());
+    }
+}
