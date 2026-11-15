@@ -15,6 +15,7 @@ use jm_core::engine::{
 use crate::calls::{CallInfo, CallManager, CallState};
 use jm_core::groups::{Group, Template};
 use jm_media::peer::CallConfig;
+use jm_media::screen::{Fps, Quality, Source};
 use jm_core::identity;
 use jm_core::relays::RelayStatus;
 use jm_core::store::Store;
@@ -49,6 +50,11 @@ pub struct MainState {
     /// Continua consultando por alguns instantes depois que a chamada some,
     /// para a tela não ficar presa em um estado antigo.
     calls_maybe_ringing: bool,
+    /// Lista de telas e janelas, enquanto a pessoa escolhe o que transmitir.
+    share_sources: Option<Vec<Source>>,
+    share_quality: Quality,
+    /// Último quadro recebido do outro lado, já pronto para desenhar.
+    remote_frame: Option<(u64, iced::widget::image::Handle)>,
     section: Section,
     groups: Vec<Group>,
     new_group: Option<String>,
@@ -113,6 +119,11 @@ pub enum Msg {
     AcceptContact(String),
     BlockContact(String),
     CallUpdated(Option<CallInfo>),
+    ToggleSharePicker,
+    ShareSource(u32),
+    StopSharing,
+    ShareQuality(Quality),
+    FrameArrived(u64, iced::widget::image::Handle),
     ToggleInvite,
     InviteContact(String, String),
     LeaveGroup(String),
@@ -267,6 +278,9 @@ impl App {
                     calls,
                     call: None,
                     calls_maybe_ringing: true,
+                    share_sources: None,
+                    share_quality: Quality::P1080,
+                    remote_frame: None,
                     section: Section::Direct,
                     groups,
                     new_group: None,
@@ -584,8 +598,72 @@ impl App {
                 )
             }
             Msg::CallUpdated(info) => {
+                let chegou_vídeo = info.as_ref().map(|i| i.frame_version).unwrap_or(0);
+                let visto = m.remote_frame.as_ref().map(|(v, _)| *v).unwrap_or(0);
                 m.call = info;
+                if m.call.is_none() {
+                    m.remote_frame = None;
+                    return Task::none();
+                }
+                // Só busca a imagem quando ela é mais nova que a desenhada:
+                // copiar megabytes a cada atualização travaria a janela.
+                if chegou_vídeo > visto {
+                    let c = Arc::clone(&m.calls);
+                    return Task::perform(
+                        async move {
+                            c.take_frame(visto).await.map(|(v, img)| {
+                                (
+                                    v,
+                                    iced::widget::image::Handle::from_rgba(
+                                        img.width,
+                                        img.height,
+                                        img.rgba,
+                                    ),
+                                )
+                            })
+                        },
+                        |r| match r {
+                            Some((v, h)) => Msg::FrameArrived(v, h),
+                            None => Msg::Noop,
+                        },
+                    );
+                }
                 Task::none()
+            }
+            Msg::FrameArrived(v, handle) => {
+                m.remote_frame = Some((v, handle));
+                Task::none()
+            }
+            Msg::ToggleSharePicker => {
+                m.share_sources = match m.share_sources {
+                    Some(_) => None,
+                    None => Some(m.calls.share_sources()),
+                };
+                Task::none()
+            }
+            Msg::ShareQuality(q) => {
+                m.share_quality = q;
+                Task::none()
+            }
+            Msg::ShareSource(id) => {
+                let Some(fonte) = m
+                    .share_sources
+                    .as_ref()
+                    .and_then(|v| v.iter().find(|s| s.id == id).cloned())
+                else {
+                    return Task::none();
+                };
+                m.share_sources = None;
+                let c = Arc::clone(&m.calls);
+                let q = m.share_quality;
+                Task::perform(
+                    async move { c.start_sharing(fonte, q, Fps::Fps30).await.map_err(|e| e) },
+                    Msg::Sent,
+                )
+            }
+            Msg::StopSharing => {
+                let c = Arc::clone(&m.calls);
+                Task::perform(async move { c.stop_sharing().await; c.info().await }, Msg::CallUpdated)
             }
             Msg::Tick => {
                 let agora = jm_core::engine::now_ms();
@@ -1484,29 +1562,59 @@ fn call_panel<'a>(m: &'a MainState, info: &'a CallInfo) -> Element<'a, Msg> {
                     .style(t::danger),
             ),
         ),
-        CallState::Active { since } => (
-            format!(
+        CallState::Active { since } => {
+            let mut situacao = format!(
                 "Em chamada com {nome} · {}",
                 crate::calls::duration_label(*since)
-            ),
-            Element::from(
-                row![
+            );
+            if let Some(o_que) = &info.sharing {
+                situacao.push_str(&format!(" · transmitindo {o_que}"));
+            } else if info.receiving_video {
+                situacao.push_str(&format!(" · {nome} está transmitindo"));
+            }
+
+            let compartilhar: Element<'a, Msg> = if info.sharing.is_some() {
+                Element::from(
+                    button(text("Parar transmissão").size(12.5).center())
+                        .on_press(Msg::StopSharing)
+                        .padding(8)
+                        .style(t::ghost),
+                )
+            } else {
+                Element::from(
                     button(
-                        text(if info.muted { "🔇 Ativar microfone" } else { "🎙 Mudo" })
+                        text(if m.share_sources.is_some() { "Fechar" } else { "🖥 Transmitir tela" })
                             .size(12.5)
-                            .center()
+                            .center(),
                     )
-                    .on_press(Msg::ToggleMute)
+                    .on_press(Msg::ToggleSharePicker)
                     .padding(8)
                     .style(t::ghost),
-                    button(text("Desligar").size(12.5).center())
-                        .on_press(Msg::HangUp)
+                )
+            };
+
+            (
+                situacao,
+                Element::from(
+                    row![
+                        compartilhar,
+                        button(
+                            text(if info.muted { "🔇 Ativar microfone" } else { "🎙 Mudo" })
+                                .size(12.5)
+                                .center()
+                        )
+                        .on_press(Msg::ToggleMute)
                         .padding(8)
-                        .style(t::danger),
-                ]
-                .spacing(8),
-            ),
-        ),
+                        .style(t::ghost),
+                        button(text("Desligar").size(12.5).center())
+                            .on_press(Msg::HangUp)
+                            .padding(8)
+                            .style(t::danger),
+                    ]
+                    .spacing(8),
+                ),
+            )
+        }
         CallState::Reconnecting => (
             "A conexão caiu, tentando voltar…".into(),
             Element::from(
@@ -1545,18 +1653,88 @@ fn call_panel<'a>(m: &'a MainState, info: &'a CallInfo) -> Element<'a, Msg> {
         Element::from(Space::new())
     };
 
-    container(
-        row![
-            column![
-                text(situacao).size(14).color(t::FG),
-                row![medidor, falando].spacing(10).align_y(Alignment::Center),
+    // O que a outra pessoa está transmitindo.
+    let tela_recebida: Element<'a, Msg> = match (&m.remote_frame, info.receiving_video) {
+        (Some((_, handle)), true) => Element::from(
+            container(
+                iced::widget::image(handle.clone())
+                    .width(Length::Fill)
+                    .content_fit(iced::ContentFit::Contain),
+            )
+            .width(Length::Fill)
+            .max_height(420)
+            .padding(4)
+            .style(t::fill(t::RAIL)),
+        ),
+        (None, true) => Element::from(
+            container(text("Recebendo a transmissão…").size(12.5).color(t::FG_FAINT))
+                .width(Length::Fill)
+                .padding(16)
+                .center_x(Length::Fill)
+                .style(t::fill(t::RAIL)),
+        ),
+        _ => Element::from(Space::new()),
+    };
+
+    let escolha: Element<'a, Msg> = match &m.share_sources {
+        Some(fontes) if matches!(info.state, CallState::Active { .. }) => {
+            let mut qualidades = row![text("Qualidade:").size(11.5).color(t::FG_FAINT)]
+                .spacing(6)
+                .align_y(Alignment::Center);
+            for q in [Quality::P720, Quality::P1080, Quality::P1440] {
+                let atual = m.share_quality == q;
+                qualidades = qualidades.push(
+                    button(text(q.label()).size(11.5).center())
+                        .on_press(Msg::ShareQuality(q))
+                        .padding(5)
+                        .style(t::row_item(atual)),
+                );
+            }
+
+            let mut lista = column![
+                text("O que você quer transmitir?").size(12.5).color(t::FG),
+                qualidades,
             ]
-            .spacing(5)
-            .width(Length::Fill),
-            botoes,
+            .spacing(7);
+
+            if fontes.is_empty() {
+                lista = lista.push(
+                    text("Nenhuma tela ou janela disponível neste computador.")
+                        .size(11.5)
+                        .color(t::FG_FAINT),
+                );
+            }
+            for f in fontes.iter().take(12) {
+                lista = lista.push(
+                    button(text(ellipsis(&f.label(), 60)).size(12.5))
+                        .on_press(Msg::ShareSource(f.id))
+                        .width(Length::Fill)
+                        .padding(7)
+                        .style(t::row_item(false)),
+                );
+            }
+            Element::from(container(lista).padding(10).style(t::panel))
+        }
+        _ => Element::from(Space::new()),
+    };
+
+    container(
+        column![
+            row![
+                column![
+                    text(situacao).size(14).color(t::FG),
+                    row![medidor, falando].spacing(10).align_y(Alignment::Center),
+                ]
+                .spacing(5)
+                .width(Length::Fill),
+                botoes,
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            tela_recebida,
+            escolha,
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        .spacing(8),
     )
     .width(Length::Fill)
     .padding(iced::Padding::from([10, 18]))

@@ -14,6 +14,8 @@ use jm_core::messages::{CallAction, CallSignal};
 use jm_media::audio::{Capture, Playback};
 use jm_media::codec::{AudioQuality, Decoder, Encoder, VoiceDetector};
 use jm_media::peer::{CallConfig, ConnectionState, MediaKind, Peer, PeerEvent};
+use jm_media::screen::{self, Capturer, Fps, Quality, Source};
+use jm_media::video::{DecodedFrame, VideoDecoder, VideoEncoder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,6 +82,12 @@ pub struct CallInfo {
     /// A outra pessoa está falando.
     pub remote_speaking: bool,
     pub video: bool,
+    /// O que você está transmitindo agora, se estiver.
+    pub sharing: Option<String>,
+    /// Está chegando vídeo do outro lado.
+    pub receiving_video: bool,
+    /// Número do último quadro recebido; muda quando há imagem nova.
+    pub frame_version: u64,
 }
 
 /// Uma chamada em andamento.
@@ -97,6 +105,13 @@ struct Active {
     /// Proposta recebida, guardada até a pessoa atender.
     pending_offer: Option<String>,
     remote_speaking: Arc<AtomicBool>,
+    receiving_video: Arc<AtomicBool>,
+    /// Última imagem recebida, com um número que muda a cada quadro novo.
+    /// A interface só copia a imagem quando o número muda, para não arrastar
+    /// megabytes a cada redesenho.
+    incoming_frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
+    /// Nome do que está sendo transmitido, e o sinal para parar.
+    sharing: Option<(String, Arc<AtomicBool>)>,
 }
 
 /// Cuida da chamada atual. Só existe uma por vez.
@@ -117,6 +132,14 @@ impl CallManager {
 
     /// Resumo da chamada atual, para desenhar a tela.
     pub async fn info(&self) -> Option<CallInfo> {
+        // A imagem fica atrás do próprio travamento; pegamos o número dela
+        // antes de montar o resumo, para não segurar dois ao mesmo tempo.
+        let quadro = {
+            let guard = self.active.lock().await;
+            Arc::clone(&guard.as_ref()?.incoming_frame)
+        };
+        let versao = quadro.lock().await.as_ref().map(|(v, _)| *v).unwrap_or(0);
+
         let guard = self.active.lock().await;
         let a = guard.as_ref()?;
         Some(CallInfo {
@@ -126,7 +149,23 @@ impl CallManager {
             mic_level: a.capture.as_ref().map(|c| c.level()).unwrap_or(0.0),
             remote_speaking: a.remote_speaking.load(Ordering::Relaxed),
             video: a.video,
+            sharing: a.sharing.as_ref().map(|(n, _)| n.clone()),
+            receiving_video: a.receiving_video.load(Ordering::Relaxed),
+            frame_version: versao,
         })
+    }
+
+    /// Última imagem recebida, se for mais nova que a `desde`.
+    pub async fn take_frame(&self, desde: u64) -> Option<(u64, DecodedFrame)> {
+        let destino = {
+            let g = self.active.lock().await;
+            Arc::clone(&g.as_ref()?.incoming_frame)
+        };
+        let slot = destino.lock().await;
+        match slot.as_ref() {
+            Some((v, img)) if *v > desde => Some((*v, img.clone())),
+            _ => None,
+        }
     }
 
     pub async fn is_busy(&self) -> bool {
@@ -162,6 +201,9 @@ impl CallManager {
                 state: CallState::Calling,
                 pending_offer: None,
                 remote_speaking: Arc::clone(&falando),
+                receiving_video: Arc::new(AtomicBool::new(false)),
+                incoming_frame: Arc::new(Mutex::new(None)),
+                sharing: None,
             });
         }
 
@@ -271,6 +313,9 @@ impl CallManager {
                 state: CallState::Ringing { video },
                 pending_offer: Some(sdp),
                 remote_speaking: Arc::new(AtomicBool::new(false)),
+                receiving_video: Arc::new(AtomicBool::new(false)),
+                incoming_frame: Arc::new(Mutex::new(None)),
+                sharing: None,
             });
         }
         self.pump(eventos);
@@ -353,6 +398,94 @@ impl CallManager {
         }
     }
 
+    /// O que pode ser transmitido neste computador.
+    pub fn share_sources(&self) -> Vec<Source> {
+        screen::sources().unwrap_or_default()
+    }
+
+    /// Começa a transmitir uma tela ou janela para quem está na chamada.
+    pub async fn start_sharing(
+        self: &Arc<Self>,
+        source: Source,
+        quality: Quality,
+        fps: Fps,
+    ) -> Result<(), String> {
+        let conn = {
+            let g = self.active.lock().await;
+            let a = g.as_ref().ok_or("não há chamada em andamento")?;
+            if a.sharing.is_some() {
+                return Err("você já está transmitindo".into());
+            }
+            Arc::clone(&a.conn)
+        };
+
+        let capturador =
+            Capturer::open(&source).map_err(|e| format!("não deu para abrir a captura: {e}"))?;
+        let primeiro = capturador
+            .grab()
+            .map_err(|e| format!("não deu para capturar a tela: {e}"))?;
+        let ajustado = primeiro.scale_to_height(quality.height());
+        let mut enc = VideoEncoder::new(ajustado.width, ajustado.height, quality, fps)
+            .map_err(|e| format!("não deu para preparar o vídeo: {e}"))?;
+
+        let parar = Arc::new(AtomicBool::new(false));
+        {
+            let mut g = self.active.lock().await;
+            if let Some(a) = g.as_mut() {
+                a.sharing = Some((source.label(), Arc::clone(&parar)));
+            }
+        }
+
+        let intervalo = fps.interval();
+        let p = Arc::clone(&parar);
+        // Thread própria: capturar e comprimir é trabalho pesado e constante,
+        // e não pode disputar espaço com a interface.
+        tokio::task::spawn(async move {
+            let mut n: u64 = 0;
+            while !p.load(Ordering::Relaxed) {
+                let inicio = std::time::Instant::now();
+                let Ok(quadro) = capturador.grab() else { break };
+                let pronto = quadro.scale_to_height(quality.height());
+                // Um quadro inteiro a cada poucos segundos, para quem entrar
+                // no meio da transmissão não ficar olhando para o nada.
+                let chave = n == 0;
+                match enc.encode(&pronto.rgba, chave) {
+                    Ok(pacotes) => {
+                        for pkt in pacotes {
+                            if conn.send_video(&pkt.data, intervalo).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("falha ao comprimir a tela: {e}");
+                        break;
+                    }
+                }
+                n += 1;
+                // Mantém a cadência sem acumular atraso quando um quadro
+                // demora mais que o normal.
+                let gasto = inicio.elapsed();
+                if gasto < intervalo {
+                    tokio::time::sleep(intervalo - gasto).await;
+                } else {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Para a transmissão de tela.
+    pub async fn stop_sharing(self: &Arc<Self>) {
+        let mut g = self.active.lock().await;
+        if let Some(a) = g.as_mut() {
+            if let Some((_, parar)) = a.sharing.take() {
+                parar.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     async fn peer_matches(&self, from: &str) -> bool {
         self.active
             .lock()
@@ -366,6 +499,9 @@ impl CallManager {
     pub async fn end(self: &Arc<Self>, reason: EndReason) {
         let anterior = self.active.lock().await.take();
         if let Some(a) = anterior {
+            if let Some((_, parar)) = &a.sharing {
+                parar.store(true, Ordering::Relaxed);
+            }
             a.conn.close().await;
             // Soltar a captura fecha o microfone: a luz do aparelho apaga.
             drop(a.capture);
@@ -383,6 +519,9 @@ impl CallManager {
                 Err(_) => return,
             };
             let mut vad = VoiceDetector::default();
+            // Só é criado quando chega vídeo de verdade: numa chamada de voz
+            // não faz sentido carregar o decodificador.
+            let mut dec_video: Option<VideoDecoder> = None;
 
             while let Some(ev) = eventos.recv().await {
                 match ev {
@@ -400,6 +539,38 @@ impl CallManager {
                         break;
                     }
                     PeerEvent::State(ConnectionState::Closed) => break,
+                    PeerEvent::TrackOpened { kind: MediaKind::Video } => {
+                        let g = eu.active.lock().await;
+                        if let Some(a) = g.as_ref() {
+                            a.receiving_video.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    PeerEvent::Media { kind: MediaKind::Video, data } => {
+                        let destino = {
+                            let g = eu.active.lock().await;
+                            match g.as_ref() {
+                                Some(a) => {
+                                    a.receiving_video.store(true, Ordering::Relaxed);
+                                    Arc::clone(&a.incoming_frame)
+                                }
+                                None => break,
+                            }
+                        };
+                        if dec_video.is_none() {
+                            dec_video = VideoDecoder::new().ok();
+                        }
+                        if let Some(d) = dec_video.as_mut() {
+                            match d.decode(&data) {
+                                Ok(Some(img)) => {
+                                    let mut slot = destino.lock().await;
+                                    let n = slot.as_ref().map(|(v, _)| v + 1).unwrap_or(1);
+                                    *slot = Some((n, img));
+                                }
+                                Ok(None) => {}
+                                Err(e) => tracing::debug!("quadro de vídeo descartado: {e}"),
+                            }
+                        }
+                    }
                     PeerEvent::Media { kind: MediaKind::Audio, data } => {
                         // Um pacote vazio significa pacote perdido: o codec
                         // inventa algo parecido em vez de deixar um buraco.

@@ -6,7 +6,7 @@
 
 use jm_media::peer::{CallConfig, ConnectionState, MediaKind, Peer, PeerEvent};
 use jm_media::screen::{self, Fps, Quality};
-use jm_media::video::VideoEncoder;
+use jm_media::video::{VideoDecoder, VideoEncoder};
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
@@ -132,11 +132,21 @@ async fn a_tela_capturada_chega_comprimida_do_outro_lado() {
 
     let mut recebidos = 0usize;
     let mut bytes_recebidos = 0usize;
+    let mut imagens = 0usize;
+    let mut tamanho_imagem = (0u32, 0u32);
+    let mut dec = VideoDecoder::new().expect("decodificador não preparou");
+
     let _ = timeout(Duration::from_secs(15), async {
         while let Some(ev) = rx_beto.recv().await {
             if let PeerEvent::Media { kind: MediaKind::Video, data } = ev {
                 recebidos += 1;
                 bytes_recebidos += data.len();
+                // Decodificar é o que prova que o quadro chegou inteiro: um
+                // quadro remontado errado não vira imagem nenhuma.
+                if let Ok(Some(img)) = dec.decode(&data) {
+                    imagens += 1;
+                    tamanho_imagem = (img.width, img.height);
+                }
                 if recebidos >= 10 {
                     break;
                 }
@@ -153,11 +163,22 @@ async fn a_tela_capturada_chega_comprimida_do_outro_lado() {
         "chegaram só {recebidos} pacotes de vídeo de {enviados} enviados"
     );
     assert!(bytes_recebidos > 0);
+    assert!(
+        imagens >= 3,
+        "chegaram {recebidos} quadros mas só {imagens} viraram imagem: a remontagem está errada"
+    );
+    assert_eq!(
+        tamanho_imagem,
+        (reduzido.width, reduzido.height),
+        "a imagem chegou com outro tamanho"
+    );
     println!(
-        "tela {}×{}: {enviados} pacotes enviados ({} KB), {recebidos} recebidos",
+        "tela {}×{}: {enviados} pacotes enviados ({} KB), {recebidos} recebidos, {imagens} viraram imagem de {}×{}",
         reduzido.width,
         reduzido.height,
-        bytes / 1024
+        bytes / 1024,
+        tamanho_imagem.0,
+        tamanho_imagem.1
     );
 
     ana.close().await;

@@ -29,6 +29,8 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::rtp::codecs::vp8::Vp8Packet;
+use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::track::track_remote::TrackRemote;
 
 #[derive(Debug, thiserror::Error)]
@@ -237,12 +239,43 @@ impl Peer {
                     if let Some(tx) = ev.lock().await.as_ref() {
                         let _ = tx.send(PeerEvent::TrackOpened { kind });
                     }
-                    // Lê os pacotes até a conexão acabar.
+                    // Um quadro de vídeo quase nunca cabe em um pacote só: ele
+                    // é picado para caber na rede e precisa ser remontado antes
+                    // de ir para o decodificador. O áudio cabe em um pacote por
+                    // quadro, então passa direto.
+                    let mut vp8 = Vp8Packet::default();
+                    let mut montando: Vec<u8> = Vec::new();
+
                     while let Ok((pacote, _)) = track.read_rtp().await {
-                        let dados = pacote.payload.to_vec();
-                        if dados.is_empty() {
+                        if pacote.payload.is_empty() {
                             continue;
                         }
+                        let pronto: Option<Vec<u8>> = if kind == MediaKind::Audio {
+                            Some(pacote.payload.to_vec())
+                        } else {
+                            match vp8.depacketize(&pacote.payload) {
+                                Ok(pedaco) => {
+                                    // Começo de quadro novo: o que estava pela
+                                    // metade se perdeu e não serve mais.
+                                    if vp8.s == 1 && vp8.pid == 0 {
+                                        montando.clear();
+                                    }
+                                    montando.extend_from_slice(&pedaco);
+                                    // A marca do RTP indica o último pedaço.
+                                    if pacote.header.marker && !montando.is_empty() {
+                                        Some(std::mem::take(&mut montando))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Err(_) => {
+                                    montando.clear();
+                                    None
+                                }
+                            }
+                        };
+
+                        let Some(dados) = pronto else { continue };
                         match ev.lock().await.as_ref() {
                             Some(tx) => {
                                 if tx.send(PeerEvent::Media { kind, data: dados }).is_err() {

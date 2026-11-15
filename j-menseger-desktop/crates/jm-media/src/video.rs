@@ -21,6 +21,7 @@ use std::ptr;
 unsafe extern "C" {
     /// Versão de ABI do libvpx deste sistema, lida do cabeçalho ao compilar.
     fn jm_vpx_encoder_abi_version() -> i32;
+    fn jm_vpx_decoder_abi_version() -> i32;
 }
 
 /// Pede que este quadro seja uma imagem inteira.
@@ -443,5 +444,193 @@ mod tests {
             alta > baixa,
             "mais qualidade deveria gastar mais: {baixa} contra {alta}"
         );
+    }
+}
+
+/* ---------------- decodificação ---------------- */
+
+/// Decodificador VP8, para mostrar o que a outra pessoa transmite.
+pub struct VideoDecoder {
+    ctx: Box<vpx::vpx_codec_ctx_t>,
+}
+
+impl VideoDecoder {
+    pub fn new() -> Result<Self> {
+        unsafe {
+            let iface = vpx::vpx_codec_vp8_dx();
+            let mut cfg: vpx::vpx_codec_dec_cfg_t = std::mem::zeroed();
+            // Deixa o codec usar mais de um núcleo em telas grandes.
+            cfg.threads = num_threads();
+            let mut ctx: Box<vpx::vpx_codec_ctx_t> = Box::new(std::mem::zeroed());
+            let r = vpx::vpx_codec_dec_init_ver(
+                &mut *ctx,
+                iface,
+                &mut cfg,
+                0,
+                jm_vpx_decoder_abi_version(),
+            );
+            if r != vpx::vpx_codec_err_t_VPX_CODEC_OK {
+                return Err(VideoError::Init(r));
+            }
+            Ok(Self { ctx })
+        }
+    }
+
+    /// Descomprime um pacote e devolve a imagem em RGBA, se houver uma pronta.
+    pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+        unsafe {
+            let r = vpx::vpx_codec_decode(
+                &mut *self.ctx,
+                data.as_ptr(),
+                data.len() as u32,
+                ptr::null_mut(),
+                0,
+            );
+            if r != vpx::vpx_codec_err_t_VPX_CODEC_OK {
+                return Err(VideoError::Encode(r));
+            }
+            let mut iter: vpx::vpx_codec_iter_t = ptr::null();
+            let img = vpx::vpx_codec_get_frame(&mut *self.ctx, &mut iter);
+            if img.is_null() {
+                // Pacote que sozinho ainda não forma uma imagem.
+                return Ok(None);
+            }
+            Ok(Some(i420_to_rgba(&*img)))
+        }
+    }
+}
+
+impl Drop for VideoDecoder {
+    fn drop(&mut self) {
+        unsafe {
+            vpx::vpx_codec_destroy(&mut *self.ctx);
+        }
+    }
+}
+
+unsafe impl Send for VideoDecoder {}
+
+/// Uma imagem recebida, pronta para desenhar.
+#[derive(Debug, Clone)]
+pub struct DecodedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Converte a imagem do codec de volta para cores de tela.
+unsafe fn i420_to_rgba(img: &vpx::vpx_image_t) -> DecodedFrame {
+    let w = img.d_w as usize;
+    let h = img.d_h as usize;
+    let mut rgba = vec![0u8; w * h * 4];
+
+    let (py, pu, pv) = (img.planes[0], img.planes[1], img.planes[2]);
+    let (sy, su, sv) = (
+        img.stride[0] as usize,
+        img.stride[1] as usize,
+        img.stride[2] as usize,
+    );
+
+    for y in 0..h {
+        for x in 0..w {
+            let luz = *py.add(y * sy + x) as i32;
+            // A cor vem em metade da resolução nas duas direções.
+            let u = *pu.add((y / 2) * su + (x / 2)) as i32 - 128;
+            let v = *pv.add((y / 2) * sv + (x / 2)) as i32 - 128;
+            let c = (luz - 16).max(0) * 298;
+
+            let i = (y * w + x) * 4;
+            rgba[i] = ((c + 409 * v + 128) >> 8).clamp(0, 255) as u8;
+            rgba[i + 1] = ((c - 100 * u - 208 * v + 128) >> 8).clamp(0, 255) as u8;
+            rgba[i + 2] = ((c + 516 * u + 128) >> 8).clamp(0, 255) as u8;
+            rgba[i + 3] = 255;
+        }
+    }
+    DecodedFrame {
+        width: w as u32,
+        height: h as u32,
+        rgba,
+    }
+}
+
+#[cfg(test)]
+mod testes_decodificacao {
+    use super::*;
+
+    fn quadro(w: u32, h: u32, cor: [u8; 3]) -> Vec<u8> {
+        let mut v = vec![0u8; (w * h * 4) as usize];
+        for p in v.chunks_mut(4) {
+            p[0] = cor[0];
+            p[1] = cor[1];
+            p[2] = cor[2];
+            p[3] = 255;
+        }
+        v
+    }
+
+    #[test]
+    fn a_imagem_volta_depois_de_comprimida() {
+        let (w, h) = (160u32, 120u32);
+        let mut enc = VideoEncoder::new(w, h, Quality::P720, Fps::Fps30).unwrap();
+        let mut dec = VideoDecoder::new().expect("decodificador não preparou");
+
+        let original = quadro(w, h, [200, 60, 40]);
+        let pacotes = enc.encode(&original, true).unwrap();
+        assert!(!pacotes.is_empty());
+
+        let mut recebido = None;
+        for p in &pacotes {
+            if let Some(img) = dec.decode(&p.data).unwrap() {
+                recebido = Some(img);
+            }
+        }
+        let img = recebido.expect("nenhuma imagem saiu do decodificador");
+        assert_eq!((img.width, img.height), (w, h), "tamanho mudou no caminho");
+        assert_eq!(img.rgba.len(), (w * h * 4) as usize);
+
+        // O VP8 tem perdas, então a cor chega parecida, não idêntica.
+        let (r, g, b) = (img.rgba[0] as i32, img.rgba[1] as i32, img.rgba[2] as i32);
+        assert!(
+            (r - 200).abs() < 25 && (g - 60).abs() < 25 && (b - 40).abs() < 25,
+            "cor muito diferente: esperava perto de (200,60,40), veio ({r},{g},{b})"
+        );
+        assert_eq!(img.rgba[3], 255, "deveria vir opaco");
+    }
+
+    #[test]
+    fn sequencia_de_quadros_continua_decodificando() {
+        let (w, h) = (160u32, 120u32);
+        let mut enc = VideoEncoder::new(w, h, Quality::P720, Fps::Fps30).unwrap();
+        let mut dec = VideoDecoder::new().unwrap();
+
+        let mut imagens = 0;
+        for i in 0..10u8 {
+            let cor = [30 + i * 20, 80, 150];
+            for p in enc.encode(&quadro(w, h, cor), i == 0).unwrap() {
+                if dec.decode(&p.data).unwrap().is_some() {
+                    imagens += 1;
+                }
+            }
+        }
+        assert!(imagens >= 8, "só {imagens} de 10 quadros saíram do decodificador");
+    }
+
+    #[test]
+    fn pacote_corrompido_nao_derruba_o_decodificador() {
+        let mut dec = VideoDecoder::new().unwrap();
+        // Lixo: tem que virar erro tratado, não pânico.
+        let r = dec.decode(&[0xff, 0x00, 0x13, 0x37]);
+        assert!(r.is_err() || r.unwrap().is_none());
+
+        // E o decodificador continua utilizável depois.
+        let mut enc = VideoEncoder::new(64, 64, Quality::P720, Fps::Fps30).unwrap();
+        let bom = enc.encode(&quadro(64, 64, [10, 220, 90]), true).unwrap();
+        let mut ok = false;
+        for p in &bom {
+            if dec.decode(&p.data).unwrap_or(None).is_some() {
+                ok = true;
+            }
+        }
+        assert!(ok, "o decodificador não se recuperou depois do pacote ruim");
     }
 }
