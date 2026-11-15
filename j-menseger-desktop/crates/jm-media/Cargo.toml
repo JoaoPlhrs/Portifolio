@@ -1,0 +1,24 @@
+[package]
+name = "jm-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Áudio, vídeo e captura de tela do J-Menseger"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes = "1"
+webrtc = "0.17"
+cpal = "0.18"
+opus = "0.4"
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
