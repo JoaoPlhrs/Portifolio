@@ -24,10 +24,14 @@ unsafe extern "C" {
     fn jm_vpx_decoder_abi_version() -> i32;
 }
 
+// Estes dois valores entram em parâmetros que o C declara como `long` e
+// `unsigned long`. Esses tipos têm 64 bits no Linux e 32 no Windows, então
+// fixar um tamanho aqui faria o código compilar num sistema e falhar no outro.
+// Usando os tipos das ligações geradas, cada sistema recebe a largura certa.
 /// Pede que este quadro seja uma imagem inteira.
-const VPX_EFLAG_FORCE_KF: i64 = 1;
+const VPX_EFLAG_FORCE_KF: vpx::vpx_enc_frame_flags_t = 1;
 /// Prazo de codificação: tempo real, sem segurar quadros.
-const VPX_DL_REALTIME: u64 = 1;
+const VPX_DL_REALTIME: std::os::raw::c_ulong = 1;
 /// Marca de quadro-chave na saída do codec.
 const VPX_FRAME_IS_KEY: u32 = 0x1;
 

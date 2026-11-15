@@ -21,3 +21,8 @@ serde.workspace = true
 serde_json.workspace = true
 futures-util = "0.3"
 iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced"] }
+
+# Sem `[target.'cfg(windows)']`: ao compilar do Linux para o Windows essa
+# condição olharia para a máquina que compila, e a dependência não entraria.
+[build-dependencies]
+winresource = "0.1"

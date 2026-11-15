@@ -180,8 +180,21 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
-        // Um pulso lento mantém "digitando…" e os horários em dia sem gastar CPU.
-        iced::time::every(std::time::Duration::from_secs(2)).map(|_| Msg::Tick)
+        // O ritmo acompanha o que está na tela. Parado, um pulso lento mantém
+        // "digitando…" e os horários em dia sem gastar CPU. Numa chamada, o
+        // nível do microfone precisa se mexer. Recebendo uma transmissão, a
+        // imagem só é fluida se a tela for atrás dela: a 2 segundos, uma
+        // transmissão de 30 quadros por segundo viraria uma sequência de
+        // fotografias.
+        let periodo = match &self.screen {
+            Screen::Main(m) => match &m.call {
+                Some(c) if c.receiving_video => std::time::Duration::from_millis(33),
+                Some(_) => std::time::Duration::from_millis(100),
+                None => std::time::Duration::from_secs(2),
+            },
+            _ => std::time::Duration::from_secs(2),
+        };
+        iced::time::every(periodo).map(|_| Msg::Tick)
     }
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
@@ -1647,6 +1660,18 @@ fn call_panel<'a>(m: &'a MainState, info: &'a CallInfo) -> Element<'a, Msg> {
         Element::from(Space::new())
     };
 
+    // Em computador de mesa é comum não haver microfone nenhum. Sem este
+    // aviso a pessoa fala achando que está sendo ouvida — e não está.
+    let sem_microfone: Element<'_, Msg> = if info.sem_microfone {
+        Element::from(
+            text("Sem microfone: você ouve, mas não é ouvido")
+                .size(11.5)
+                .color(t::WARN),
+        )
+    } else {
+        Element::from(Space::new())
+    };
+
     let falando: Element<'_, Msg> = if info.remote_speaking {
         Element::from(text(format!("{nome} está falando")).size(11.5).color(t::ACCENT))
     } else {
@@ -1723,7 +1748,9 @@ fn call_panel<'a>(m: &'a MainState, info: &'a CallInfo) -> Element<'a, Msg> {
             row![
                 column![
                     text(situacao).size(14).color(t::FG),
-                    row![medidor, falando].spacing(10).align_y(Alignment::Center),
+                    row![medidor, falando, sem_microfone]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
                 ]
                 .spacing(5)
                 .width(Length::Fill),
@@ -1775,15 +1802,6 @@ async fn start_engine(
     Ok(StartedOk { engine, chats })
 }
 
-/// Marca que um contato existe, usado pela interface ao abrir um perfil.
-pub fn status_label(s: ContactStatus) -> &'static str {
-    match s {
-        ContactStatus::Request => "pedido de conversa",
-        ContactStatus::Ok => "contato",
-        ContactStatus::Blocked => "bloqueado",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1797,12 +1815,6 @@ mod tests {
         // Não pode partir caractere de vários bytes no meio.
         let acentos = "áéíóúãõçàâ e mais";
         assert!(ellipsis(acentos, 5).chars().count() <= 5);
-    }
-
-    #[test]
-    fn nomes_de_situacao_do_contato() {
-        assert_eq!(status_label(ContactStatus::Ok), "contato");
-        assert_eq!(status_label(ContactStatus::Blocked), "bloqueado");
     }
 }
 

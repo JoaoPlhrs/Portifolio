@@ -73,6 +73,11 @@ em JavaScript é testado hoje contra um relay local.
 - Uma thread de interface, que nunca faz trabalho pesado.
 - Um runtime Tokio para rede, relays e banco.
 - Threads dedicadas para captura de áudio, captura de tela e codificação.
+  Capturar e comprimir a tela é trabalho bloqueante e constante; no executor
+  assíncrono ele disputaria espaço com a rede. Além disso, no Windows o
+  capturador guarda um ponteiro do sistema e não pode atravessar threads — o
+  compilador cruzado para Windows foi quem apontou o erro, que no Linux passava
+  despercebido.
 - A comunicação entre o núcleo e a interface é por canal de eventos, não por
   bloqueio: a interface recebe atualizações e redesenha.
 
@@ -86,7 +91,7 @@ Uma transmissão de tela a 60 FPS não pode travar a digitação de uma mensagem
 | Áudio de entrada/saída | `cpal` | Enumeração e captura de dispositivos em Windows (WASAPI), Linux (ALSA) e macOS (CoreAudio). |
 | Codec de áudio | `opus` | Mesmo codec do celular. |
 | Captura de tela | `xcap` + APIs nativas | Monitor e janela; Windows Graphics Capture no Windows, PipeWire/X11 no Linux. |
-| Codec de vídeo | H.264 por hardware quando houver, software como alternativa | NVENC, AMF e Quick Sync quando disponíveis. |
+| Codec de vídeo | VP8 por software (libvpx) | **Só software.** NVENC, AMF e Quick Sync não estão implementados. VP8 foi escolhido por ser obrigatório em WebRTC, o que garante que o celular entenda a transmissão sem negociação extra. |
 
 **Limitação deste ambiente, declarada desde já:** este contêiner não tem GPU,
 placa de som, câmera nem tela física. Posso escrever e compilar essas camadas e
@@ -94,7 +99,33 @@ testar a lógica, mas **não posso validar aqui** qualidade de imagem, FPS reais
 latência de áudio ou codificação por hardware. Isso exige rodar em máquinas de
 verdade, e será declarado como não testado até que isso aconteça.
 
-## 7. O que não é aceitável neste projeto
+## 7. Compilar para Windows a partir do Linux
+
+O aplicativo é Rust puro com duas exceções em C: **libvpx** (vídeo) e
+**libopus** (voz). Tudo o mais — janela, desenho, rede, áudio do sistema,
+captura de tela — usa as bibliotecas do próprio Windows, sem nenhuma DLL extra.
+
+Por isso o executável do Windows é gerado aqui, no Linux, em dois passos:
+
+1. `packaging/windows/bibliotecas-c.sh` compila libvpx e libopus para Windows
+   com o mingw-w64 e escreve os arquivos `.pc` correspondentes.
+2. O `cargo build --target x86_64-pc-windows-gnu` encontra essas bibliotecas
+   pelo pkg-config, exatamente como encontra as de Linux.
+
+As fontes em C vêm do repositório da própria distribuição, na mesma versão que
+o Linux daqui usa. Isso importa: ligações geradas contra uma versão e
+executadas contra outra fazem o libvpx recusar a inicialização, erro que já
+apareceu neste projeto.
+
+O resultado é um `.exe` que depende apenas de DLLs que vêm no Windows
+(`d3d11`, `mmdevapi`, `ws2_32`, `combase`…), sem runtime do mingw junto.
+
+**O que isso não prova:** o executável foi compilado e teve seus recursos
+conferidos aqui, mas **não foi executado**, porque não há Windows neste
+ambiente. Compilar prova que o código é válido para o alvo; não prova que a
+janela abre, que o som sai nem que a captura de tela funciona lá.
+
+## 8. O que não é aceitável neste projeto
 
 - Botão que não faz o que diz.
 - Dados de exemplo fingindo ser conversa real.

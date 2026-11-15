@@ -3,6 +3,12 @@
 //! Aplicativo nativo: a interface é desenhada pela GPU (ou por software, quando
 //! não há GPU), sem navegador embutido em nenhuma camada.
 
+// No Windows, um programa comum abre uma janela de console preta junto com a
+// janela do aplicativo. Esta linha diz ao sistema que aqui só existe a
+// interface gráfica. Fica valendo apenas na versão final: durante o
+// desenvolvimento o console é útil para ler os registros.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod bridge;
 mod calls;
@@ -12,17 +18,11 @@ use app::{App, Msg};
 use iced::{Size, Task};
 
 fn main() -> iced::Result {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "jm_app=info,jm_core=info".into()),
-        )
-        .init();
-
     let db = db_path();
     if let Some(dir) = db.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    iniciar_registros(&db);
     tracing::info!("dados em {}", db.display());
 
     // Para testes locais: J_MENSEGER_RELAYS=ws://127.0.0.1:7781
@@ -45,8 +45,52 @@ fn main() -> iced::Result {
     .title(App::title)
     .theme(App::theme)
     .subscription(App::subscription)
-    .window_size(Size::new(1180.0, 760.0))
+    .window(iced::window::Settings {
+        size: Size::new(1180.0, 760.0),
+        min_size: Some(Size::new(880.0, 560.0)),
+        icon: icone(),
+        ..Default::default()
+    })
     .run()
+}
+
+/// Ícone da janela e da barra de tarefas.
+///
+/// Vai dentro do executável: um arquivo solto ao lado dele sumiria assim que
+/// alguém movesse o programa de lugar.
+fn icone() -> Option<iced::window::Icon> {
+    iced::window::icon::from_file_data(include_bytes!("../recursos/icone.png"), None).ok()
+}
+
+/// Liga os registros.
+///
+/// Na versão final do Windows não existe console para onde escrever, então os
+/// registros vão para um arquivo ao lado do banco. Sem isso, um problema
+/// relatado por quem usa o aplicativo não deixaria rastro nenhum.
+fn iniciar_registros(db: &std::path::Path) {
+    let filtro = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "jm_app=info,jm_core=info".into());
+    let arquivo = if cfg!(windows) && !cfg!(debug_assertions) {
+        db.parent()
+            .map(|d| d.join("jmenseger.log"))
+            .and_then(|c| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(c)
+                    .ok()
+            })
+    } else {
+        None
+    };
+    match arquivo {
+        Some(f) => tracing_subscriber::fmt()
+            .with_env_filter(filtro)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(f))
+            .init(),
+        None => tracing_subscriber::fmt().with_env_filter(filtro).init(),
+    }
 }
 
 /// Fluxo com os avisos do motor, consumido pela interface.
