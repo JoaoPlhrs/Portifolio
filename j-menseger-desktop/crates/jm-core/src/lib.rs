@@ -5,5 +5,7 @@
 
 pub mod identity;
 pub mod protocol;
+pub mod relays;
+pub mod store;
 
 pub use protocol::{DEFAULT_RELAYS, CHUNK};
