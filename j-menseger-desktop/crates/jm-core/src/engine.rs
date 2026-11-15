@@ -219,6 +219,8 @@ impl Default for Settings {
 
 struct State {
     contacts: HashMap<String, Contact>,
+    /// Quando pedimos o perfil de alguém pela última vez, para não insistir.
+    prof_req_at: HashMap<String, i64>,
     /// Conversa aberta na tela, para marcar como lida e não notificar.
     active: Option<String>,
 }
@@ -250,7 +252,11 @@ impl Engine {
             me,
             settings,
             store: Arc::new(Mutex::new(store)),
-            state: Arc::new(Mutex::new(State { contacts, active: None })),
+            state: Arc::new(Mutex::new(State {
+                contacts,
+                prof_req_at: HashMap::new(),
+                active: None,
+            })),
             events: tx,
         });
         Ok((engine, rx))
@@ -411,6 +417,9 @@ impl Engine {
                     reply: protocol::tag_value(&rumor, "e").map(|s| s.to_string()),
                 };
                 self.store_and_emit(msg, exp, !from_me)?;
+                if !from_me {
+                    self.maybe_request_profile(&peer);
+                }
             }
             KIND_REACTION => { /* reações entram junto com o restante da interface */ }
             KIND_APP => {
@@ -452,6 +461,13 @@ impl Engine {
                 self.save_contact(&snapshot)?;
                 let _ = self.events.send(EngineEvent::ContactChanged { pk: peer.into() });
                 let _ = self.events.send(EngineEvent::ChatsChanged);
+            }
+            AppMessage::ProfileRequest if !from_me => {
+                let me = Arc::clone(self);
+                let p = peer.to_string();
+                tokio::spawn(async move {
+                    let _ = me.send_profile(&p).await;
+                });
             }
             AppMessage::Receipt { s, ids } if !from_me => {
                 let status = match s {
@@ -596,7 +612,13 @@ impl Engine {
         let peer_pk = PublicKey::from_hex(peer)
             .map_err(|_| EngineError::UnknownChat(chat_key.to_string()))?;
 
-        self.ensure_contact(peer, ContactStatus::Ok)?;
+        let contato = self.ensure_contact(peer, ContactStatus::Ok)?;
+        // Na primeira mensagem para alguém, vai o seu perfil junto: é assim que
+        // a outra pessoa passa a ver o seu nome em vez do seu código.
+        if !contato.prof_sent {
+            let _ = self.send_profile(peer).await;
+            self.mark_profile_sent(peer)?;
+        }
 
         let rumor = protocol::make_rumor(
             &self.keys,
@@ -715,10 +737,73 @@ impl Engine {
         }
         let hex = pk.to_hex();
         self.ensure_contact(&hex, ContactStatus::Ok)?;
+        // A conversa precisa existir na lista antes da primeira mensagem, senão
+        // a pessoa adiciona alguém e não tem onde escrever.
+        self.ensure_chat(&ChatKey::Direct { peer: hex.clone() }.as_string())?;
         let c = self.contact(&hex).ok_or(EngineError::NoIdentity)?;
         let _ = self.send_profile(&hex).await;
         let _ = self.events.send(EngineEvent::ChatsChanged);
         Ok(c)
+    }
+
+    fn mark_profile_sent(&self, pk: &str) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = st.contacts.get_mut(pk) {
+            c.prof_sent = true;
+            let snap = c.clone();
+            drop(st);
+            self.save_contact(&snap)?;
+        }
+        Ok(())
+    }
+
+    /// Pede o perfil de quem ainda não tem nome, no máximo uma vez a cada 6 h.
+    fn maybe_request_profile(self: &Arc<Self>, pk: &str) {
+        {
+            let st = self.state.lock().unwrap();
+            match st.contacts.get(pk) {
+                Some(c) if c.name.is_empty() => {}
+                _ => return,
+            }
+        }
+        let agora = now_ms();
+        {
+            let mut st = self.state.lock().unwrap();
+            let ultimo = st.prof_req_at.get(pk).copied().unwrap_or(0);
+            if agora - ultimo < 6 * 3600 * 1000 {
+                return;
+            }
+            st.prof_req_at.insert(pk.to_string(), agora);
+        }
+        let me = Arc::clone(self);
+        let pk = pk.to_string();
+        tokio::spawn(async move {
+            let _ = me.send_app(&pk, &AppMessage::ProfileRequest).await;
+            let _ = me.send_profile(&pk).await;
+        });
+    }
+
+    /// Garante que a conversa aparece na lista, mesmo sem nenhuma mensagem.
+    pub fn ensure_chat(&self, chat_key: &str) -> Result<()> {
+        let key = ChatKey::parse(chat_key)
+            .ok_or_else(|| EngineError::UnknownChat(chat_key.to_string()))?;
+        let (kind, peer) = match &key {
+            ChatKey::Direct { peer } => ("dm", Some(peer.clone())),
+            ChatKey::Channel { .. } => ("group", None),
+        };
+        let store = self.store.lock().unwrap();
+        store
+            .raw()
+            .execute(
+                "INSERT INTO chats (key, kind, peer, last_ts, last_text)
+                 VALUES (?1, ?2, ?3, ?4, '')
+                 ON CONFLICT(key) DO UPDATE SET deleted = 0",
+                rusqlite::params![chat_key, kind, peer, now_ms()],
+            )
+            .map_err(crate::store::StoreError::from)?;
+        drop(store);
+        let _ = self.events.send(EngineEvent::ChatsChanged);
+        Ok(())
     }
 
     fn ensure_contact(&self, pk: &str, status: ContactStatus) -> Result<Contact> {

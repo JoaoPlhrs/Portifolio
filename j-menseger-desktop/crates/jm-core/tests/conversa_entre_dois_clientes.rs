@@ -285,3 +285,85 @@ async fn a_conta_restaurada_recupera_a_conversa() {
     ana2.shutdown().await;
     beto.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adicionar_contato_ja_abre_a_conversa() {
+    // Sem isto a pessoa adiciona alguém pelo código e fica sem onde escrever:
+    // a conversa só nascia quando a primeira mensagem chegava.
+    let Some(relay) = TestRelay::start(7824) else {
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    let (ana, _ev, _) = cliente("Ana", &relay.url).await;
+    let (beto, _ev_b, npub_beto) = cliente("Beto", &relay.url).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(ana.chat_list().unwrap().is_empty(), "começa sem conversas");
+
+    ana.add_contact(&npub_beto).await.unwrap();
+
+    let lista = ana.chat_list().unwrap();
+    assert_eq!(lista.len(), 1, "a conversa deveria aparecer logo após adicionar");
+    assert_eq!(lista[0].key, format!("dm:{}", beto.public_key().to_hex()));
+    assert_eq!(lista[0].unread, 0);
+    assert!(lista[0].last_text.is_empty(), "ainda sem mensagens");
+
+    // E dá para escrever nela na hora.
+    ana.send_text(&lista[0].key, "primeira").await.unwrap();
+    assert_eq!(ana.messages(&lista[0].key, i64::MAX, 10).unwrap().len(), 1);
+
+    ana.shutdown().await;
+    beto.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn os_dois_lados_passam_a_ver_o_nome_um_do_outro() {
+    // Sem a troca de perfis a conversa fica com um código npub no lugar do nome.
+    let Some(relay) = TestRelay::start(7825) else {
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    let (ana, mut ev_ana, _) = cliente("Ana Souza", &relay.url).await;
+    let (beto, mut ev_beto, npub_beto) = cliente("Beto Lima", &relay.url).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let pk_ana = ana.public_key().to_hex();
+    let pk_beto = beto.public_key().to_hex();
+
+    ana.add_contact(&npub_beto).await.unwrap();
+    ana.send_text(&format!("dm:{pk_beto}"), "oi").await.unwrap();
+
+    // Beto recebe e passa a ver "Ana Souza".
+    esperar(&mut ev_beto, 12, texto_recebido).await.expect("não chegou");
+    assert!(
+        ate_que(12, || beto.name_of(&pk_ana) == "Ana Souza").await,
+        "Beto continua vendo o código no lugar do nome de Ana: {}",
+        beto.name_of(&pk_ana)
+    );
+
+    // Ana pede o perfil de Beto ao receber a resposta dele.
+    beto.send_text(&format!("dm:{pk_ana}"), "oi de volta").await.unwrap();
+    esperar(&mut ev_ana, 12, texto_recebido).await.expect("resposta não chegou");
+    assert!(
+        ate_que(12, || ana.name_of(&pk_beto) == "Beto Lima").await,
+        "Ana continua vendo o código no lugar do nome de Beto: {}",
+        ana.name_of(&pk_beto)
+    );
+
+    ana.shutdown().await;
+    beto.shutdown().await;
+}
+
+/// Tenta a condição por alguns segundos antes de desistir.
+async fn ate_que(segundos: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let limite = std::time::Instant::now() + Duration::from_secs(segundos);
+    while std::time::Instant::now() < limite {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    false
+}

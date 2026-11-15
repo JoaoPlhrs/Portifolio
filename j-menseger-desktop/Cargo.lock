@@ -2316,6 +2316,7 @@ name = "jm-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "iced",
  "jm-core",
  "serde",
