@@ -6,7 +6,7 @@
 
 use crate::groups::{Group, GroupMeta, Template};
 use crate::identity;
-use crate::messages::{AppMessage, ChatKey, Delivery, ReceiptKind};
+use crate::messages::{AppMessage, CallAction, CallSignal, ChatKey, Delivery, ReceiptKind};
 use crate::protocol::{self, WrapOptions, KIND_APP, KIND_REACTION, KIND_TEXT};
 use crate::relays::{RelayPool, RelayStatus};
 use crate::store::{StoredMsg, Store};
@@ -207,6 +207,10 @@ pub enum EngineEvent {
     Relays(Vec<RelayStatus>),
     /// A lista de grupos ou os dados de um grupo mudaram.
     GroupsChanged,
+    /// Chegou sinalização de chamada de alguém.
+    CallSignal { from: String, signal: CallSignal },
+    /// Uma chamada que você não atendeu.
+    MissedCall { from: String, video: bool, ts: i64 },
 }
 
 /// Ajustes do aplicativo.
@@ -503,6 +507,43 @@ impl Engine {
                     let _ = me.send_profile(&p).await;
                 });
             }
+            AppMessage::Call(sig) if !from_me => {
+                if sig.a == CallAction::Missed {
+                    let video = sig.v.unwrap_or(0) == 1;
+                    let msg = Message {
+                        id: format!("missed-{ts_ms}"),
+                        chat: chat.into(),
+                        author: peer.into(),
+                        from_me: false,
+                        ts: ts_ms,
+                        body: MessageBody::System(if video {
+                            "Chamada de vídeo perdida".into()
+                        } else {
+                            "Chamada de voz perdida".into()
+                        }),
+                        status: None,
+                        reply: None,
+                    };
+                    self.store_and_emit(msg, None, true)?;
+                    let _ = self.events.send(EngineEvent::MissedCall {
+                        from: peer.into(),
+                        video,
+                        ts: ts_ms,
+                    });
+                } else {
+                    // Quem não é contato aceito não pode ligar.
+                    let aceito = matches!(
+                        self.state.lock().unwrap().contacts.get(peer).map(|c| c.status),
+                        Some(ContactStatus::Ok)
+                    );
+                    if aceito {
+                        let _ = self.events.send(EngineEvent::CallSignal {
+                            from: peer.into(),
+                            signal: sig,
+                        });
+                    }
+                }
+            }
             AppMessage::GroupInvite { g } if !from_me => {
                 self.store_invite(g, peer, chat, ts_ms)?;
             }
@@ -796,6 +837,27 @@ impl Engine {
             .await
             .map_err(|e| EngineError::Relay(e.to_string()))?;
         Ok(())
+    }
+
+    /// Manda sinalização de chamada para alguém.
+    ///
+    /// Vai como envelope efêmero: o servidor repassa na hora e não guarda.
+    pub async fn send_call_signal(self: &Arc<Self>, peer: &str, signal: CallSignal) -> Result<()> {
+        self.send_app(peer, &AppMessage::Call(signal)).await
+    }
+
+    /// Registra no histórico que você não atendeu, e avisa o outro lado.
+    pub async fn report_missed_call(self: &Arc<Self>, peer: &str, video: bool) -> Result<()> {
+        self.send_call_signal(
+            peer,
+            CallSignal {
+                cid: String::new(),
+                a: CallAction::Missed,
+                sdp: None,
+                v: Some(video as u8),
+            },
+        )
+        .await
     }
 
     /// Manda o próprio perfil para alguém.

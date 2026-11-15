@@ -2996,6 +2996,7 @@ dependencies = [
  "futures-util",
  "iced",
  "jm-core",
+ "jm-media",
  "serde",
  "serde_json",
  "tokio",

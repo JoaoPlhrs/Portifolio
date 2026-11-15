@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 jm-core = { path = "../jm-core" }
+jm-media = { path = "../jm-media" }
 anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true

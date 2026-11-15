@@ -5,6 +5,7 @@
 
 mod app;
 mod bridge;
+mod calls;
 mod theme;
 
 use app::{App, Msg};

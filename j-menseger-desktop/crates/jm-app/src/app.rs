@@ -12,7 +12,9 @@ use iced::{Alignment, Element, Length, Subscription, Task};
 use jm_core::engine::{
     ChatSummary, ContactStatus, Engine, EngineEvent, Message as CoreMessage, MessageBody, Settings,
 };
+use crate::calls::{CallInfo, CallManager, CallState};
 use jm_core::groups::{Group, Template};
+use jm_media::peer::CallConfig;
 use jm_core::identity;
 use jm_core::relays::RelayStatus;
 use jm_core::store::Store;
@@ -42,6 +44,11 @@ pub enum Section {
 
 pub struct MainState {
     engine: Arc<Engine>,
+    calls: Arc<CallManager>,
+    call: Option<CallInfo>,
+    /// Continua consultando por alguns instantes depois que a chamada some,
+    /// para a tela não ficar presa em um estado antigo.
+    calls_maybe_ringing: bool,
     section: Section,
     groups: Vec<Group>,
     new_group: Option<String>,
@@ -98,6 +105,14 @@ pub enum Msg {
     ConfirmNewGroup(Template),
     GroupsReloaded(Vec<Group>),
     AcceptInvite(String),
+    StartCall(String),
+    AcceptCall,
+    DeclineCall,
+    HangUp,
+    ToggleMute,
+    AcceptContact(String),
+    BlockContact(String),
+    CallUpdated(Option<CallInfo>),
     ToggleInvite,
     InviteContact(String, String),
     LeaveGroup(String),
@@ -246,8 +261,12 @@ impl App {
                 self.busy = false;
                 let engine = Arc::clone(&ok.engine);
                 let groups = ok.engine.groups();
+                let calls = CallManager::new(Arc::clone(&ok.engine), CallConfig::default());
                 self.screen = Screen::Main(Box::new(MainState {
                     engine,
+                    calls,
+                    call: None,
+                    calls_maybe_ringing: true,
                     section: Section::Direct,
                     groups,
                     new_group: None,
@@ -317,6 +336,20 @@ impl App {
                     Task::none()
                 }
                 EngineEvent::ContactChanged { .. } => {
+                    let e = Arc::clone(&m.engine);
+                    Task::perform(async move { e.chat_list().unwrap_or_default() }, Msg::ChatsReloaded)
+                }
+                EngineEvent::CallSignal { from, signal } => {
+                    let c = Arc::clone(&m.calls);
+                    Task::perform(
+                        async move {
+                            c.on_signal(&from, signal).await;
+                            c.info().await
+                        },
+                        Msg::CallUpdated,
+                    )
+                }
+                EngineEvent::MissedCall { .. } => {
                     let e = Arc::clone(&m.engine);
                     Task::perform(async move { e.chat_list().unwrap_or_default() }, Msg::ChatsReloaded)
                 }
@@ -486,9 +519,83 @@ impl App {
                     Msg::Sent,
                 )
             }
+            Msg::AcceptContact(pk) => {
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move {
+                        e.set_contact_status(&pk, ContactStatus::Ok)
+                            .map_err(|e| e.to_string())?;
+                        // Aceitar é também se apresentar: o outro lado passa a
+                        // ver o seu nome em vez do código.
+                        let _ = e.send_profile(&pk).await;
+                        Ok(())
+                    },
+                    Msg::Sent,
+                )
+            }
+            Msg::BlockContact(pk) => {
+                m.open_chat = None;
+                m.messages.clear();
+                let e = Arc::clone(&m.engine);
+                Task::perform(
+                    async move {
+                        e.set_contact_status(&pk, ContactStatus::Blocked)
+                            .map_err(|e| e.to_string())
+                    },
+                    Msg::Sent,
+                )
+            }
+            Msg::StartCall(pk) => {
+                let c = Arc::clone(&m.calls);
+                Task::perform(
+                    async move {
+                        if let Err(e) = c.start(&pk, false).await {
+                            tracing::warn!("não deu para ligar: {}", e.label());
+                        }
+                        c.info().await
+                    },
+                    Msg::CallUpdated,
+                )
+            }
+            Msg::AcceptCall => {
+                let c = Arc::clone(&m.calls);
+                Task::perform(
+                    async move {
+                        let _ = c.accept().await;
+                        c.info().await
+                    },
+                    Msg::CallUpdated,
+                )
+            }
+            Msg::DeclineCall => {
+                let c = Arc::clone(&m.calls);
+                Task::perform(async move { c.decline().await; c.info().await }, Msg::CallUpdated)
+            }
+            Msg::HangUp => {
+                let c = Arc::clone(&m.calls);
+                Task::perform(async move { c.hang_up().await; c.info().await }, Msg::CallUpdated)
+            }
+            Msg::ToggleMute => {
+                let c = Arc::clone(&m.calls);
+                let agora = m.call.as_ref().map(|c| c.muted).unwrap_or(false);
+                Task::perform(
+                    async move { c.set_muted(!agora).await; c.info().await },
+                    Msg::CallUpdated,
+                )
+            }
+            Msg::CallUpdated(info) => {
+                m.call = info;
+                Task::none()
+            }
             Msg::Tick => {
                 let agora = jm_core::engine::now_ms();
                 m.typing.retain(|_, ate| *ate > agora);
+                // A tela da chamada mostra duração e nível do microfone, que
+                // mudam o tempo todo: só vale consultar enquanto há chamada.
+                if m.call.is_some() || m.calls_maybe_ringing {
+                    let c = Arc::clone(&m.calls);
+                    return Task::perform(async move { c.info().await }, Msg::CallUpdated);
+                }
                 Task::none()
             }
             _ => Task::none(),
@@ -1085,11 +1192,32 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
     let atual = m.chats.iter().find(|c| c.key == chave);
     let titulo = atual.map(|c| c.title.clone()).unwrap_or_else(|| "Conversa".into());
 
+    let mut acoes = row![].spacing(8).align_y(Alignment::Center);
+    // Ligar só faz sentido em conversa de duas pessoas, e só com contato aceito.
+    if let Some(jm_core::messages::ChatKey::Direct { peer }) =
+        jm_core::messages::ChatKey::parse(chave)
+    {
+        let aceito = m
+            .engine
+            .contact(&peer)
+            .map(|c| c.status == ContactStatus::Ok)
+            .unwrap_or(false);
+        if aceito && m.call.is_none() {
+            acoes = acoes.push(
+                button(text("📞 Ligar").size(12.5).center())
+                    .on_press(Msg::StartCall(peer))
+                    .padding(8)
+                    .style(t::ghost),
+            );
+        }
+    }
+    acoes = acoes.push(text("cifrada de ponta a ponta").size(12).color(t::FG_FAINT));
+
     let cabecalho = container(
         row![
             text(titulo).size(16).color(t::FG),
             space().width(Length::Fill),
-            text("cifrada de ponta a ponta").size(12).color(t::FG_FAINT),
+            acoes,
         ]
         .align_y(Alignment::Center),
     )
@@ -1205,6 +1333,11 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
         }
     }
 
+    let painel_chamada: Element<'_, Msg> = match &m.call {
+        Some(info) => call_panel(m, info),
+        None => Element::from(Space::new()),
+    };
+
     let aviso = match &m.error {
         Some(e) => Element::from(
             container(text(e.clone()).size(12.5).color(t::DANGER))
@@ -1212,6 +1345,65 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
         ),
         None => Element::from(Space::new()),
     };
+
+    // Conversa de alguém que ainda não está nos seus contatos: antes de
+    // responder, a pessoa decide se aceita. Até aceitar, nada é confirmado
+    // para o outro lado.
+    let pedido: Option<String> = match jm_core::messages::ChatKey::parse(chave) {
+        Some(jm_core::messages::ChatKey::Direct { peer }) => m
+            .engine
+            .contact(&peer)
+            .filter(|c| c.status == ContactStatus::Request)
+            .map(|_| peer),
+        _ => None,
+    };
+
+    if let Some(pk) = pedido {
+        let nome = m.engine.name_of(&pk);
+        let barra = container(
+            column![
+                text(format!(
+                    "{nome} não está nos seus contatos. Ninguém sabe que você viu esta conversa até aceitar."
+                ))
+                .size(13)
+                .color(t::FG_DIM),
+                row![
+                    button(text("Bloquear").size(13).center())
+                        .on_press(Msg::BlockContact(pk.clone()))
+                        .padding(10)
+                        .style(t::ghost),
+                    button(text("Aceitar").size(13).center())
+                        .on_press(Msg::AcceptContact(pk))
+                        .width(Length::Fill)
+                        .padding(10)
+                        .style(t::primary),
+                ]
+                .spacing(10),
+            ]
+            .spacing(10),
+        )
+        .width(Length::Fill)
+        .padding(iced::Padding::from([12, 18]))
+        .style(t::fill(t::SURFACE));
+
+        return container(
+            column![
+                cabecalho,
+                painel_chamada,
+                scrollable(lista)
+                    .height(Length::Fill)
+                    .anchor_bottom()
+                    .style(t::scroll),
+                aviso,
+                barra,
+            ]
+            .height(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(t::fill(t::MAIN))
+        .into();
+    }
 
     let escrita = container(
         row![
@@ -1234,6 +1426,7 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
     container(
         column![
             cabecalho,
+            painel_chamada,
             scrollable(lista)
                 .height(Length::Fill)
                 .anchor_bottom()
@@ -1246,6 +1439,128 @@ fn conversation(m: &MainState) -> Element<'_, Msg> {
     .width(Length::Fill)
     .height(Length::Fill)
     .style(t::fill(t::MAIN))
+    .into()
+}
+
+/// Faixa da chamada em andamento, no topo da conversa.
+fn call_panel<'a>(m: &'a MainState, info: &'a CallInfo) -> Element<'a, Msg> {
+    let nome = m.engine.name_of(&info.peer);
+
+    let (situacao, botoes): (String, Element<'a, Msg>) = match &info.state {
+        CallState::Calling => (
+            format!("Chamando {nome}…"),
+            Element::from(
+                button(text("Cancelar").size(12.5).center())
+                    .on_press(Msg::HangUp)
+                    .padding(8)
+                    .style(t::danger),
+            ),
+        ),
+        CallState::Ringing { video } => (
+            format!(
+                "{nome} está {}",
+                if *video { "chamando em vídeo" } else { "ligando" }
+            ),
+            Element::from(
+                row![
+                    button(text("Atender").size(12.5).center())
+                        .on_press(Msg::AcceptCall)
+                        .padding(8)
+                        .style(t::primary),
+                    button(text("Recusar").size(12.5).center())
+                        .on_press(Msg::DeclineCall)
+                        .padding(8)
+                        .style(t::danger),
+                ]
+                .spacing(8),
+            ),
+        ),
+        CallState::Connecting => (
+            "Conectando…".into(),
+            Element::from(
+                button(text("Desligar").size(12.5).center())
+                    .on_press(Msg::HangUp)
+                    .padding(8)
+                    .style(t::danger),
+            ),
+        ),
+        CallState::Active { since } => (
+            format!(
+                "Em chamada com {nome} · {}",
+                crate::calls::duration_label(*since)
+            ),
+            Element::from(
+                row![
+                    button(
+                        text(if info.muted { "🔇 Ativar microfone" } else { "🎙 Mudo" })
+                            .size(12.5)
+                            .center()
+                    )
+                    .on_press(Msg::ToggleMute)
+                    .padding(8)
+                    .style(t::ghost),
+                    button(text("Desligar").size(12.5).center())
+                        .on_press(Msg::HangUp)
+                        .padding(8)
+                        .style(t::danger),
+                ]
+                .spacing(8),
+            ),
+        ),
+        CallState::Reconnecting => (
+            "A conexão caiu, tentando voltar…".into(),
+            Element::from(
+                button(text("Desligar").size(12.5).center())
+                    .on_press(Msg::HangUp)
+                    .padding(8)
+                    .style(t::danger),
+            ),
+        ),
+        CallState::Ended { reason } => (reason.label().to_string(), Element::from(Space::new())),
+    };
+
+    // Medidor do microfone: mostra que o computador está mesmo captando som.
+    let medidor: Element<'_, Msg> = if matches!(info.state, CallState::Active { .. }) {
+        let cheio = (info.mic_level.clamp(0.0, 1.0) * 60.0).max(1.0);
+        Element::from(
+            row![
+                container(Space::new())
+                    .width(cheio)
+                    .height(5.0)
+                    .style(t::fill(if info.muted { t::FG_FAINT } else { t::ACCENT })),
+                container(Space::new())
+                    .width((60.0 - cheio).max(1.0))
+                    .height(5.0)
+                    .style(t::fill(t::SURFACE_HI)),
+            ]
+            .spacing(0),
+        )
+    } else {
+        Element::from(Space::new())
+    };
+
+    let falando: Element<'_, Msg> = if info.remote_speaking {
+        Element::from(text(format!("{nome} está falando")).size(11.5).color(t::ACCENT))
+    } else {
+        Element::from(Space::new())
+    };
+
+    container(
+        row![
+            column![
+                text(situacao).size(14).color(t::FG),
+                row![medidor, falando].spacing(10).align_y(Alignment::Center),
+            ]
+            .spacing(5)
+            .width(Length::Fill),
+            botoes,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(iced::Padding::from([10, 18]))
+    .style(t::fill(t::SURFACE))
     .into()
 }
 

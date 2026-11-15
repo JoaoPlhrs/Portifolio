@@ -4,6 +4,7 @@
 //! codificação de vídeo são trabalho pesado e contínuo, e precisam rodar em
 //! threads próprias, longe da interface e da rede.
 
+pub mod audio;
 pub mod codec;
 pub mod peer;
 pub mod screen;
