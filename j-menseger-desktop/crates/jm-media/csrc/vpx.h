@@ -1,0 +1,4 @@
+#include <vpx/vpx_codec.h>
+#include <vpx/vpx_encoder.h>
+#include <vpx/vpx_image.h>
+#include <vpx/vp8cx.h>

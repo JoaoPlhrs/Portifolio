@@ -22,3 +22,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+[build-dependencies]
+bindgen = "0.72"
+cc = "1"
+pkg-config = "0.3"

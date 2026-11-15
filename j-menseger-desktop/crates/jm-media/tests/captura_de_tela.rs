@@ -10,12 +10,55 @@ fn tem_tela() -> bool {
     std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
 }
 
+/// Uma tela virtual sem nenhuma janela aberta não entrega conteúdo: o servidor
+/// só prepara a área de desenho quando existe algum cliente. Num computador de
+/// verdade isso nunca acontece, porque sempre há o ambiente gráfico.
+///
+/// A janela é criada uma vez por execução e fica viva até o fim: se cada teste
+/// criasse e matasse a sua, um teste apagaria a janela enquanto outro ainda
+/// estivesse capturando.
+fn garantir_cliente() {
+    use std::sync::OnceLock;
+    static CLIENTE: OnceLock<()> = OnceLock::new();
+    CLIENTE.get_or_init(|| {
+        let consegue = screen::monitors()
+            .ok()
+            .and_then(|m| m.first().cloned())
+            .is_some_and(|t| screen::capture(&t).is_ok());
+        if consegue {
+            return;
+        }
+        if std::process::Command::new("xterm")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+    });
+}
+
+/// A captura de tela usa o servidor gráfico, que não gosta de vários
+/// capturadores ao mesmo tempo. No aplicativo existe um só, em uma thread
+/// dedicada; aqui o travamento reproduz essa condição.
+fn captura_exclusiva() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static TRAVA: OnceLock<Mutex<()>> = OnceLock::new();
+    TRAVA
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn lista_e_captura_uma_tela_de_verdade() {
     if !tem_tela() {
         eprintln!("pulando: sem tela neste ambiente");
         return;
     }
+    let _exclusiva = captura_exclusiva();
+    garantir_cliente();
     let monitores = match screen::monitors() {
         Ok(m) => m,
         Err(e) => {
@@ -76,34 +119,38 @@ fn quadro_capturado_e_reduzido_para_a_qualidade_escolhida() {
 }
 
 #[test]
-fn captura_repetida_mantem_a_cadencia() {
+fn captura_repetida_nao_esgota_o_sistema() {
     if !tem_tela() {
+        eprintln!("pulando: sem tela neste ambiente");
         return;
     }
-    let Ok(monitores) = screen::monitors() else { return };
-    let Some(tela) = monitores.first() else { return };
+    let _exclusiva = captura_exclusiva();
+    garantir_cliente();
+    let telas = screen::monitors().expect("não listou as telas");
+    let tela = telas.first().expect("nenhuma tela");
+    let cap = screen::Capturer::open(tela).expect("não abriu o capturador");
 
-    // Dez quadros seguidos, medindo quanto tempo cada captura leva.
+    // Transmitir significa capturar dezenas de vezes por segundo. Se cada
+    // quadro abrisse uma conexão nova com o sistema gráfico, os recursos se
+    // esgotariam e a transmissão cairia depois de poucos segundos.
     let mut tempos = Vec::new();
-    for _ in 0..10 {
+    for i in 0..60 {
         let t0 = std::time::Instant::now();
-        match screen::capture(tela) {
-            Ok(_) => tempos.push(t0.elapsed()),
-            Err(e) => {
-                eprintln!("pulando: captura falhou no meio ({e})");
-                return;
-            }
-        }
+        let q = cap
+            .grab()
+            .unwrap_or_else(|e| panic!("a captura {i} falhou: {e}"));
+        assert!(q.pixels() > 0);
+        tempos.push(t0.elapsed());
     }
-    let media = tempos.iter().sum::<std::time::Duration>() / tempos.len() as u32;
-    println!("tempo médio por quadro: {media:?} (alvo 30 fps: {:?})", Fps::Fps30.interval());
 
-    // Não exigimos 30 fps aqui: esta máquina não tem GPU e a tela é virtual.
-    // O que o teste garante é que a captura funciona repetidamente, sem travar
-    // nem vazar memória a ponto de degradar.
+    let media = tempos.iter().sum::<std::time::Duration>() / tempos.len() as u32;
+    println!(
+        "60 capturas seguidas · média {media:?} (alvo 30 fps: {:?})",
+        Fps::Fps30.interval()
+    );
     assert!(
-        media < std::time::Duration::from_secs(2),
-        "capturar um quadro levou {media:?}, algo está muito errado"
+        media < std::time::Duration::from_millis(400),
+        "cada quadro levou {media:?}"
     );
 }
 

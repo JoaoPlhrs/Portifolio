@@ -173,32 +173,64 @@ pub fn sources() -> Result<Vec<Source>> {
     Ok(v)
 }
 
-/// Captura um quadro de uma fonte.
+/// Captura um quadro avulso de uma fonte.
+///
+/// Para transmitir, use [`Capturer`]: esta função reabre a conexão com o
+/// sistema a cada chamada, o que é aceitável para uma prévia mas não para
+/// dezenas de quadros por segundo.
 pub fn capture(source: &Source) -> Result<Frame> {
-    let imagem = match source.kind {
-        SourceKind::Monitor => {
-            let m = xcap::Monitor::all()
-                .map_err(|e| ScreenError::List(e.to_string()))?
-                .into_iter()
-                .find(|m| m.id().map(|i| i == source.id).unwrap_or(false))
-                .ok_or(ScreenError::Gone)?;
-            m.capture_image().map_err(|e| ScreenError::Capture(e.to_string()))?
+    Capturer::open(source)?.grab()
+}
+
+/// Captura repetida da mesma fonte.
+///
+/// Guardar a referência da tela entre os quadros não é só mais rápido: abrir
+/// uma conexão nova a cada quadro esgota os recursos do servidor gráfico em
+/// poucos segundos a 30 ou 60 quadros por segundo, e a transmissão morre.
+pub enum Capturer {
+    Monitor(Box<xcap::Monitor>),
+    Window(Box<xcap::Window>),
+}
+
+impl Capturer {
+    pub fn open(source: &Source) -> Result<Self> {
+        match source.kind {
+            SourceKind::Monitor => {
+                let m = xcap::Monitor::all()
+                    .map_err(|e| ScreenError::List(e.to_string()))?
+                    .into_iter()
+                    .find(|m| m.id().map(|i| i == source.id).unwrap_or(false))
+                    .ok_or(ScreenError::Gone)?;
+                Ok(Capturer::Monitor(Box::new(m)))
+            }
+            SourceKind::Window => {
+                let w = xcap::Window::all()
+                    .map_err(|e| ScreenError::List(e.to_string()))?
+                    .into_iter()
+                    .find(|w| w.id().map(|i| i == source.id).unwrap_or(false))
+                    .ok_or(ScreenError::Gone)?;
+                Ok(Capturer::Window(Box::new(w)))
+            }
         }
-        SourceKind::Window => {
-            let w = xcap::Window::all()
-                .map_err(|e| ScreenError::List(e.to_string()))?
-                .into_iter()
-                .find(|w| w.id().map(|i| i == source.id).unwrap_or(false))
-                .ok_or(ScreenError::Gone)?;
-            w.capture_image().map_err(|e| ScreenError::Capture(e.to_string()))?
-        }
-    };
-    Ok(Frame {
-        width: imagem.width(),
-        height: imagem.height(),
-        rgba: imagem.into_raw(),
-        at: Instant::now(),
-    })
+    }
+
+    /// Pega o quadro atual.
+    pub fn grab(&self) -> Result<Frame> {
+        let imagem = match self {
+            Capturer::Monitor(m) => m
+                .capture_image()
+                .map_err(|e| ScreenError::Capture(e.to_string()))?,
+            Capturer::Window(w) => w
+                .capture_image()
+                .map_err(|e| ScreenError::Capture(e.to_string()))?,
+        };
+        Ok(Frame {
+            width: imagem.width(),
+            height: imagem.height(),
+            rgba: imagem.into_raw(),
+            at: Instant::now(),
+        })
+    }
 }
 
 /// Quadros por segundo da transmissão.
