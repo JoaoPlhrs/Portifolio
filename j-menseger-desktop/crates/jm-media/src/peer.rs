@@ -15,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
@@ -79,6 +81,9 @@ pub enum PeerEvent {
     Media { kind: MediaKind, data: Vec<u8> },
     /// Mensagem pelo canal de dados (soundboard, avisos de câmera).
     Data(Vec<u8>),
+    /// O canal de dados abriu: hora de contar se a câmera e o microfone
+    /// estão ligados, como o celular faz.
+    DataOpen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,13 +121,56 @@ pub struct Peer {
     audio: Arc<TrackLocalStaticSample>,
     video: Arc<TrackLocalStaticSample>,
     events: Arc<Mutex<Option<mpsc::UnboundedSender<PeerEvent>>>>,
+    /// O outro lado pediu uma imagem inteira (PLI/FIR): perdeu um pedaço ou
+    /// acabou de começar a ver. Sem atender, a imagem fica congelada até o
+    /// próximo quadro-chave natural, que pode demorar segundos.
+    keyframe_wanted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Peer {
     /// Abre uma conexão nova e devolve o canal de eventos.
     pub async fn new(cfg: CallConfig) -> Result<(Self, mpsc::UnboundedReceiver<PeerEvent>)> {
+        // Só os codecs que este lado sabe tratar: Opus e VP8. Anunciar outros
+        // (H.264, VP9, AV1) deixaria o outro lado escolher um deles e a
+        // chamada conectaria sem imagem. VP8 e Opus são obrigatórios em
+        // WebRTC, então qualquer navegador (e o celular) aceita.
         let mut m = MediaEngine::default();
-        m.register_default_codecs().map_err(rtc)?;
+        m.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: 48_000,
+                    channels: 2,
+                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 111,
+                ..Default::default()
+            },
+            RTPCodecType::Audio,
+        )
+        .map_err(rtc)?;
+        let feedback = vec![
+            RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
+            RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+            RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
+            RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+        ];
+        m.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_VP8.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_owned(),
+                    rtcp_feedback: feedback,
+                },
+                payload_type: 96,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )
+        .map_err(rtc)?;
         let registry = register_default_interceptors(Registry::new(), &mut m).map_err(rtc)?;
         let api = APIBuilder::new()
             .with_media_engine(m)
@@ -195,12 +243,35 @@ impl Peer {
             "jm".to_owned(),
         ));
 
-        pc.add_track(Arc::clone(&audio) as Arc<dyn TrackLocal + Send + Sync>)
+        let envio_audio = pc
+            .add_track(Arc::clone(&audio) as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(rtc)?;
-        pc.add_track(Arc::clone(&video) as Arc<dyn TrackLocal + Send + Sync>)
+        let envio_video = pc
+            .add_track(Arc::clone(&video) as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(rtc)?;
+
+        // Ler o RTCP que volta é o que faz os interceptadores funcionarem
+        // (reenvio de pacote perdido, NACK) e é por onde chega o pedido de
+        // quadro-chave do outro lado.
+        let keyframe_wanted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let kf = Arc::clone(&keyframe_wanted);
+            tokio::spawn(async move {
+                while let Ok((pacotes, _)) = envio_video.read_rtcp().await {
+                    for p in pacotes {
+                        let a = p.as_any();
+                        if a.is::<webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
+                            || a.is::<webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                        {
+                            kf.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+            tokio::spawn(async move { while envio_audio.read_rtcp().await.is_ok() {} });
+        }
 
         // Avisos de mudança de estado.
         {
@@ -239,6 +310,12 @@ impl Peer {
                     if let Some(tx) = ev.lock().await.as_ref() {
                         let _ = tx.send(PeerEvent::TrackOpened { kind });
                     }
+                    // A leitura roda numa tarefa própria: a biblioteca espera
+                    // este tratador terminar antes de anunciar a próxima faixa.
+                    // Com o laço aqui dentro, a faixa de vídeo nunca era
+                    // anunciada depois que o áudio começava — a câmera do
+                    // celular chegava ao PC e ficava sem ninguém lendo.
+                    tokio::spawn(async move {
                     // Um quadro de vídeo quase nunca cabe em um pacote só: ele
                     // é picado para caber na rede e precisa ser remontado antes
                     // de ir para o decodificador. O áudio cabe em um pacote por
@@ -285,11 +362,23 @@ impl Peer {
                             None => break,
                         }
                     }
+                    });
                 })
             }));
         }
 
         // Canal de dados.
+        {
+            let ev = Arc::clone(&events);
+            data.on_open(Box::new(move || {
+                let ev = Arc::clone(&ev);
+                Box::pin(async move {
+                    if let Some(tx) = ev.lock().await.as_ref() {
+                        let _ = tx.send(PeerEvent::DataOpen);
+                    }
+                })
+            }));
+        }
         {
             let ev = Arc::clone(&events);
             data.on_message(Box::new(move |msg| {
@@ -303,7 +392,7 @@ impl Peer {
         }
 
         Ok((
-            Self { pc, data, audio, video, events },
+            Self { pc, data, audio, video, events, keyframe_wanted },
             rx,
         ))
     }
@@ -379,13 +468,28 @@ impl Peer {
             .map_err(rtc)
     }
 
-    /// Manda uma mensagem pelo canal de dados (som do soundboard, avisos).
+    /// Manda uma mensagem de texto pelo canal de dados.
+    ///
+    /// Tem que ser **texto**: o celular faz `JSON.parse(ev.data)`, e uma
+    /// mensagem binária chega lá como `ArrayBuffer` e é descartada em
+    /// silêncio — o soundboard e o aviso de câmera do PC sumiriam no caminho.
+    pub async fn send_text(&self, text: &str) -> Result<()> {
+        self.data.send_text(text.to_string()).await.map(|_| ()).map_err(rtc)
+    }
+
+    /// Manda bytes pelo canal de dados (só entre computadores; o celular
+    /// ignora mensagens binárias).
     pub async fn send_data(&self, bytes: &[u8]) -> Result<()> {
         self.data
             .send(&bytes::Bytes::copy_from_slice(bytes))
             .await
             .map(|_| ())
             .map_err(rtc)
+    }
+
+    /// O outro lado pediu um quadro-chave desde a última vez que perguntamos?
+    pub fn take_keyframe_request(&self) -> bool {
+        self.keyframe_wanted.swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn data_is_open(&self) -> bool {
