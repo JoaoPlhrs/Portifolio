@@ -6,9 +6,13 @@
 pub mod engine;
 pub mod groups;
 pub mod identity;
+pub mod media;
 pub mod messages;
+pub mod pin;
 pub mod protocol;
 pub mod relays;
+pub mod safety;
+pub mod sounds;
 pub mod store;
 
 pub use protocol::{DEFAULT_RELAYS, CHUNK};

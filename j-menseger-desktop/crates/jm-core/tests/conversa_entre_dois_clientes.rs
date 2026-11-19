@@ -120,7 +120,8 @@ async fn ana_e_beto_conversam_de_verdade() {
         .send_text(&chat_ana, "Oi Beto! Mandando do computador.")
         .await
         .expect("não enviou");
-    assert_eq!(enviada.status, Some(Delivery::Pending).map(|_| Delivery::Pending));
+    // Como no celular: com um servidor aceitando, a mensagem já sai como enviada.
+    assert_eq!(enviada.status, Some(Delivery::Sent));
 
     // Beto recebe.
     let recebida = esperar(&mut ev_beto, 12, texto_recebido)
@@ -158,6 +159,24 @@ async fn ana_e_beto_conversam_de_verdade() {
     let lista_ana = ana.chat_list().unwrap();
     assert_eq!(lista_ana.len(), 1);
     assert!(lista_ana[0].last_from_me);
+
+    // Ana ainda é um pedido de conversa para Beto: a chegada não gera recibo
+    // de entrega automático (a mesma sequência do teste do celular).
+    let recibo_cedo = esperar(&mut ev_ana, 3, |e| match e {
+        EngineEvent::MessageUpdated { id, status, .. } if *id == enviada.id && *status >= Delivery::Delivered => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(recibo_cedo.is_none(), "pedido de conversa não manda recibo de entrega sozinho");
+
+    // Beto aceita: Ana vê "entregue".
+    beto.accept_contact(&ana.public_key().to_hex()).await.unwrap();
+    let entregue = esperar(&mut ev_ana, 12, |e| match e {
+        EngineEvent::MessageUpdated { id, status, .. } if *id == enviada.id && *status >= Delivery::Delivered => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(entregue.is_some(), "Ana não viu a entrega depois do aceite");
 
     // Beto abre a conversa: zera o não lido e confirma a leitura.
     let chat_beto = format!("dm:{}", ana.public_key().to_hex());

@@ -199,9 +199,12 @@ pub struct MediaHeader {
     /// Duração do áudio, em segundos.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dur: Option<u32>,
-    /// Forma de onda para desenhar o áudio sem precisar baixá-lo.
+    /// Forma de onda para desenhar o áudio sem precisar baixá-lo (0 a 31).
+    ///
+    /// Lida como inteiro largo: um valor fora da faixa é aparado depois, em
+    /// vez de fazer a mensagem inteira ser descartada.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wf: Option<Vec<u8>>,
+    pub wf: Option<Vec<i64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub w: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -244,6 +247,11 @@ pub struct GroupInvite {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CallSignal {
     /// Identificador da chamada, para não confundir duas ao mesmo tempo.
+    ///
+    /// Opcional no fio: o celular manda o aviso de chamada perdida sem ele
+    /// (`{t:'call', a:'missed', v}`), e exigir o campo fazia o PC descartar
+    /// todas as chamadas perdidas vindas do celular.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cid: String,
     pub a: CallAction,
     /// Descrição da conexão WebRTC.
@@ -252,6 +260,28 @@ pub struct CallSignal {
     /// 1 quando é chamada de vídeo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u8>,
+    /// Sinalização de sala de voz: `cid` vale `"room"` e aqui vai qual sala.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<RoomRef>,
+}
+
+/// Uma sala de voz: o grupo e o canal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomRef {
+    pub lid: String,
+    pub ch: String,
+}
+
+impl CallSignal {
+    /// Sinal de chamada comum (duas pessoas).
+    pub fn new(cid: &str, a: CallAction) -> Self {
+        Self { cid: cid.into(), a, sdp: None, v: None, room: None }
+    }
+
+    /// É sinalização de sala de voz?
+    pub fn is_room(&self) -> bool {
+        self.cid == "room" && self.room.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -352,6 +382,7 @@ mod tests {
                 a: CallAction::Offer,
                 sdp: Some("v=0".into()),
                 v: Some(1),
+                room: None,
             }),
         ];
         for m in casos {
@@ -380,6 +411,42 @@ mod tests {
 
         let j = AppMessage::Room { ch: "voz".into(), a: Presence::Leave }.to_json();
         assert_eq!(j, r#"{"t":"room","ch":"voz","a":"leave"}"#);
+    }
+
+    #[test]
+    fn chamada_perdida_do_celular_e_entendida() {
+        // engine.js: { t: 'call', a: 'missed', v: video ? 1 : 0 } — sem cid.
+        match AppMessage::parse(r#"{"t":"call","a":"missed","v":1}"#) {
+            Some(AppMessage::Call(c)) => {
+                assert_eq!(c.a, CallAction::Missed);
+                assert_eq!(c.v, Some(1));
+            }
+            outro => panic!("chamada perdida descartada: {outro:?}"),
+        }
+        let j = AppMessage::Call(CallSignal { v: Some(0), ..CallSignal::new("", CallAction::Missed) }).to_json();
+        assert_eq!(j, r#"{"t":"call","a":"missed","v":0}"#, "o PC manda no mesmo formato");
+    }
+
+    #[test]
+    fn sinal_de_sala_tem_o_formato_do_celular() {
+        // calls.js: e.signal(pk, { cid: 'room', a: 'end', room: { lid, ch } })
+        let s = CallSignal {
+            room: Some(RoomRef { lid: "l".into(), ch: "voz".into() }),
+            ..CallSignal::new("room", CallAction::End)
+        };
+        let j = AppMessage::Call(s.clone()).to_json();
+        assert_eq!(j, r#"{"t":"call","cid":"room","a":"end","room":{"lid":"l","ch":"voz"}}"#);
+        assert!(s.is_room());
+        assert!(!CallSignal::new("abc", CallAction::End).is_room());
+    }
+
+    #[test]
+    fn forma_de_onda_fora_da_faixa_nao_derruba_a_mensagem() {
+        let j = r#"{"t":"mh","mid":"m","type":"audio","mime":"audio/webm","size":10,"n":1,"wf":[-3,40,7]}"#;
+        match AppMessage::parse(j) {
+            Some(AppMessage::MediaHeader(h)) => assert_eq!(h.wf, Some(vec![-3, 40, 7])),
+            outro => panic!("cabeçalho perdido: {outro:?}"),
+        }
     }
 
     #[test]
@@ -412,10 +479,10 @@ mod tests {
     fn sabe_o_que_vai_como_efemero() {
         assert!(AppMessage::Typing.is_ephemeral());
         assert!(AppMessage::Room { ch: "x".into(), a: Presence::Here }.is_ephemeral());
-        let oferta = CallSignal { cid: "c".into(), a: CallAction::Offer, sdp: None, v: None };
+        let oferta = CallSignal::new("c", CallAction::Offer);
         assert!(AppMessage::Call(oferta).is_ephemeral());
 
-        let perdida = CallSignal { cid: "c".into(), a: CallAction::Missed, sdp: None, v: None };
+        let perdida = CallSignal::new("c", CallAction::Missed);
         assert!(
             !AppMessage::Call(perdida).is_ephemeral(),
             "chamada perdida precisa ficar no histórico"

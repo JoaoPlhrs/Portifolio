@@ -4,7 +4,10 @@
 //! modelo de dados, porque o histórico aqui tende a ser grande e precisa de
 //! consulta indexada por conversa e data, sem carregar tudo na memória.
 //!
-//! A chave privada **não** mora aqui: ela fica no cofre do sistema operacional.
+//! A chave da conta também fica aqui (em `kv`). Isso é uma fraqueza
+//! conhecida e documentada: quem copiar este arquivo leva a conta junto. O
+//! celular usa o cofre do Android; o equivalente no computador (cofre do
+//! sistema) está na lista de pendências do README.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
@@ -166,6 +169,14 @@ impl Store {
             "#,
         )?;
 
+        // Bancos criados antes das reações não têm a coluna: acrescenta.
+        let tem_reacts: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('msgs') WHERE name = 'reacts'")?
+            .exists([])?;
+        if !tem_reacts {
+            conn.execute_batch("ALTER TABLE msgs ADD COLUMN reacts TEXT NOT NULL DEFAULT '{}';")?;
+        }
+
         let found: i64 = conn
             .query_row("SELECT v FROM kv WHERE k = 'schema'", [], |r| {
                 r.get::<_, String>(0)
@@ -230,17 +241,31 @@ impl Store {
 
     pub fn put_msg(&self, m: &StoredMsg) -> Result<bool> {
         let n = self.conn.execute(
-            "INSERT OR IGNORE INTO msgs (id, chat, author, kind, ts, body, status, exp, reply)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![m.id, m.chat, m.author, m.kind, m.ts, m.body, m.status, m.exp, m.reply],
+            "INSERT OR IGNORE INTO msgs (id, chat, author, kind, ts, body, status, exp, reply, reacts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![m.id, m.chat, m.author, m.kind, m.ts, m.body, m.status, m.exp, m.reply, m.reacts],
         )?;
         Ok(n > 0)
+    }
+
+    /// Regrava tipo, conteúdo, situação e reações de uma mensagem que já existe.
+    pub fn update_msg(&self, m: &StoredMsg) -> Result<()> {
+        self.conn.execute(
+            "UPDATE msgs SET kind = ?2, body = ?3, status = ?4, reacts = ?5, exp = ?6 WHERE id = ?1",
+            params![m.id, m.kind, m.body, m.status, m.reacts, m.exp],
+        )?;
+        Ok(())
+    }
+
+    /// A mensagem mais recente de uma conversa.
+    pub fn last_msg(&self, chat: &str) -> Result<Option<StoredMsg>> {
+        Ok(self.msgs_by_chat(chat, i64::MAX, 1)?.pop())
     }
 
     pub fn get_msg(&self, id: &str) -> Result<Option<StoredMsg>> {
         self.conn
             .query_row(
-                "SELECT id, chat, author, kind, ts, body, status, exp, reply FROM msgs WHERE id = ?1",
+                "SELECT id, chat, author, kind, ts, body, status, exp, reply, reacts FROM msgs WHERE id = ?1",
                 params![id],
                 row_to_msg,
             )
@@ -259,7 +284,7 @@ impl Store {
     /// Página de mensagens de uma conversa, da mais antiga para a mais nova.
     pub fn msgs_by_chat(&self, chat: &str, before_ts: i64, limit: usize) -> Result<Vec<StoredMsg>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, chat, author, kind, ts, body, status, exp, reply
+            "SELECT id, chat, author, kind, ts, body, status, exp, reply, reacts
              FROM msgs WHERE chat = ?1 AND ts < ?2
              ORDER BY ts DESC LIMIT ?3",
         )?;
@@ -273,7 +298,7 @@ impl Store {
     /// Mensagens temporárias cujo prazo já passou.
     pub fn msgs_expired(&self, now: i64) -> Result<Vec<StoredMsg>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, chat, author, kind, ts, body, status, exp, reply
+            "SELECT id, chat, author, kind, ts, body, status, exp, reply, reacts
              FROM msgs WHERE exp IS NOT NULL AND exp <= ?1",
         )?;
         let rows: Vec<StoredMsg> = stmt
@@ -349,6 +374,48 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// Registra que uma mídia é esperada, antes de os blocos chegarem.
+    pub fn put_media_pending(&self, mid: &str, msg_id: &str, chat: &str, mime: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO media (mid, msg_id, chat, mime, bytes) VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![mid, msg_id, chat, mime],
+        )?;
+        Ok(())
+    }
+
+    /// `(id da mensagem, conversa, já tem os bytes)` de uma mídia conhecida.
+    pub fn media_record(&self, mid: &str) -> Result<Option<(Option<String>, Option<String>, bool)>> {
+        self.conn
+            .query_row(
+                "SELECT msg_id, chat, bytes IS NOT NULL FROM media WHERE mid = ?1",
+                params![mid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn delete_media(&self, mid: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM media WHERE mid = ?1", params![mid])?;
+        self.conn.execute("DELETE FROM chunks WHERE mid = ?1", params![mid])?;
+        Ok(())
+    }
+
+    /// Apaga fotos e áudios recebidos e enviados. Os textos ficam.
+    pub fn clear_media(&self) -> Result<usize> {
+        let n = self.conn.execute("DELETE FROM media", [])?;
+        self.conn.execute("DELETE FROM chunks", [])?;
+        Ok(n)
+    }
+
+    pub fn chunk_count(&self, mid: &str) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE mid = ?1",
+            params![mid],
+            |r| r.get::<_, i64>(0),
+        )? as u32)
+    }
+
     /// Espaço ocupado por fotos, áudios e sons, em bytes.
     pub fn media_size(&self) -> Result<i64> {
         Ok(self.conn.query_row(
@@ -356,6 +423,84 @@ impl Store {
             [],
             |r| r.get(0),
         )?)
+    }
+
+    /* ---------------- chamadas ---------------- */
+
+    pub fn log_call(&self, c: &CallLog) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO calls (id, peer, dir, video, ts, dur, status) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![c.id, c.peer, c.dir, c.video as i64, c.ts, c.dur, c.status],
+        )?;
+        Ok(())
+    }
+
+    pub fn calls(&self, limit: usize) -> Result<Vec<CallLog>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, peer, dir, video, ts, dur, status FROM calls ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows: Vec<CallLog> = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(CallLog {
+                    id: r.get(0)?,
+                    peer: r.get(1)?,
+                    dir: r.get(2)?,
+                    video: r.get::<_, i64>(3)? != 0,
+                    ts: r.get(4)?,
+                    dur: r.get(5)?,
+                    status: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn clear_calls(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM calls", [])?;
+        Ok(())
+    }
+
+    /* ---------------- sons próprios ---------------- */
+
+    pub fn put_sound(&self, s: &SoundRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sounds (id, name, emoji, dur, mime, bytes, ts) VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, emoji = ?3",
+            params![s.id, s.name, s.emoji, s.dur, s.mime, s.bytes, s.ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn sounds(&self) -> Result<Vec<SoundRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, emoji, dur, mime, bytes, ts FROM sounds ORDER BY ts")?;
+        let rows: Vec<SoundRecord> = stmt
+            .query_map([], |r| {
+                Ok(SoundRecord {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    emoji: r.get(2)?,
+                    dur: r.get(3)?,
+                    mime: r.get(4)?,
+                    bytes: r.get(5)?,
+                    ts: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_sound(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM sounds WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Tamanho do arquivo do banco, em bytes.
+    pub fn db_size(&self) -> Result<i64> {
+        let pages: i64 = self.conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let size: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        Ok(pages * size)
     }
 
     /* ---------------- fila de envio ---------------- */
@@ -399,6 +544,33 @@ impl Store {
     }
 }
 
+/// Uma chamada no histórico.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallLog {
+    pub id: String,
+    pub peer: String,
+    /// `in` ou `out`.
+    pub dir: String,
+    pub video: bool,
+    pub ts: i64,
+    /// Duração em segundos (0 se não foi atendida).
+    pub dur: i64,
+    /// `ok`, `missed`, `declined`, `busy`, `cancelled`, `failed`.
+    pub status: String,
+}
+
+/// Um som criado pela pessoa para o soundboard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundRecord {
+    pub id: String,
+    pub name: String,
+    pub emoji: String,
+    pub dur: f64,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub ts: i64,
+}
+
 /// Uma mensagem como ela fica guardada.
 ///
 /// `body` carrega o JSON específico do tipo (texto, mídia, som, convite…), o
@@ -414,6 +586,8 @@ pub struct StoredMsg {
     pub status: Option<String>,
     pub exp: Option<i64>,
     pub reply: Option<String>,
+    /// Reações em JSON: `{chave pública: emoji}`.
+    pub reacts: String,
 }
 
 fn row_to_msg(r: &rusqlite::Row) -> rusqlite::Result<StoredMsg> {
@@ -427,6 +601,7 @@ fn row_to_msg(r: &rusqlite::Row) -> rusqlite::Result<StoredMsg> {
         status: r.get(6)?,
         exp: r.get(7)?,
         reply: r.get(8)?,
+        reacts: r.get(9)?,
     })
 }
 
@@ -445,6 +620,7 @@ mod tests {
             status: Some("sent".into()),
             exp: None,
             reply: None,
+            reacts: "{}".into(),
         }
     }
 

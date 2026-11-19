@@ -47,7 +47,19 @@ pub struct RelayStatus {
 pub struct RelayPool {
     client: Client,
     keys: Keys,
+    /// Servidores preferidos dos contatos, usados só para entregar.
+    ///
+    /// Quem mudou de servidores no celular avisa no perfil; sem publicar
+    /// também nesses, a mensagem nunca chegaria até a pessoa.
+    extras: std::sync::Mutex<std::collections::HashSet<String>>,
 }
+
+/// Quantos servidores de contatos manter, no máximo.
+const MAX_EXTRAS: usize = 20;
+/// Identificadores fixos das assinaturas: assinar de novo com o mesmo nome
+/// substitui a anterior, em vez de acumular uma assinatura a cada mudança.
+const SUB_STORED: &str = "jm-inbox";
+const SUB_EPH: &str = "jm-inbox-eph";
 
 impl RelayPool {
     /// Cria o conjunto. A chave entra para poder responder à autenticação
@@ -57,7 +69,11 @@ impl RelayPool {
         let client = Client::builder()
             .authenticator(SignerAuthenticator::new(keys.clone()))
             .build();
-        Self { client, keys }
+        Self {
+            client,
+            keys,
+            extras: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -73,8 +89,12 @@ impl RelayPool {
             .collect::<Result<_, _>>()?;
 
         let current: Vec<RelayUrl> = self.client.relays().await.into_keys().collect();
+        let extras = self.extras.lock().unwrap().clone();
 
-        for url in current.iter().filter(|u| !desired.contains(u)) {
+        for url in current
+            .iter()
+            .filter(|u| !desired.contains(u) && !extras.contains(&u.to_string()))
+        {
             let _ = self.client.remove_relay(url.clone()).await;
         }
         for url in desired.iter().filter(|u| !current.contains(u)) {
@@ -141,13 +161,61 @@ impl RelayPool {
             .pubkeys(pubkeys.iter().copied())
             .since(Timestamp::now() - 60u64);
 
-        for f in [stored, ephemeral] {
+        for (id, f) in [(SUB_STORED, stored), (SUB_EPH, ephemeral)] {
+            // A biblioteca recusa um id que já existe em vez de substituir:
+            // fecha a assinatura anterior antes de abrir a nova.
+            let sid = SubscriptionId::new(id);
+            let _ = self.client.unsubscribe(&sid).await;
             self.client
                 .subscribe(f)
+                .with_id(sid)
                 .await
                 .map_err(|e| RelayError::Sdk(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Acrescenta servidores de contatos, só para entrega.
+    ///
+    /// São marcados como de escrita: o aplicativo publica neles, mas não
+    /// assina nada neles, então não passam a saber quais chaves você escuta.
+    pub async fn add_extra_relays(&self, urls: &[String]) {
+        let mut novos = Vec::new();
+        {
+            let mut ex = self.extras.lock().unwrap();
+            for u in urls {
+                let Some(n) = normalize_url(u) else { continue };
+                if ex.len() >= MAX_EXTRAS {
+                    break;
+                }
+                if ex.insert(n.clone()) {
+                    novos.push(n);
+                }
+            }
+        }
+        if novos.is_empty() {
+            return;
+        }
+        let atuais: Vec<String> = self
+            .client
+            .relays()
+            .await
+            .into_keys()
+            .map(|u| u.to_string())
+            .collect();
+        for n in novos {
+            if atuais.contains(&n) {
+                continue;
+            }
+            if let Ok(url) = RelayUrl::parse(&n) {
+                let _ = self
+                    .client
+                    .add_relay(url)
+                    .capabilities(RelayCapabilities::WRITE)
+                    .await;
+            }
+        }
+        self.client.connect().await;
     }
 
     /// Publica um envelope. Devolve quantos servidores confirmaram.

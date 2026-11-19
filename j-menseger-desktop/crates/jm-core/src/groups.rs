@@ -131,6 +131,11 @@ pub struct Group {
     pub ver: u64,
     pub pic: Option<String>,
     pub pic_v: u64,
+    /// Foto que cada membro mostrou dentro do grupo (vem no `gjoin`).
+    pub pics: std::collections::HashMap<String, String>,
+    /// Canais de texto apagados por um admin: mensagens atrasadas que ainda
+    /// chegarem para eles são descartadas, em vez de ressuscitar o canal.
+    pub gone: Vec<String>,
     pub muted: bool,
     pub joined_at: i64,
 }
@@ -162,14 +167,14 @@ impl Group {
 
         Self {
             lid: pk.clone(),
-            pk,
+            pk: pk.clone(),
             sk: keys.secret_key().to_secret_hex(),
             old_keys: Vec::new(),
             meta: GroupMeta {
-                lid: None,
+                lid: Some(pk.clone()),
                 name: clamp(name, 40),
                 desc: String::new(),
-                t: 0,
+                t: rand::random::<u8>() % 6,
                 channels: canais,
                 owner: owner_hex.clone(),
                 admins: vec![owner_hex.clone()],
@@ -179,6 +184,8 @@ impl Group {
             ver: 1,
             pic: None,
             pic_v: 0,
+            pics: std::collections::HashMap::new(),
+            gone: Vec::new(),
             muted: false,
             joined_at: crate::engine::now_ms(),
         }
@@ -219,6 +226,93 @@ impl Group {
         self.sk = novas.secret_key().to_secret_hex();
         self.ver += 1;
         novas
+    }
+}
+
+/// Uma mudança feita por um administrador. Cada uma vale para todos os
+/// membros: depois de aplicada, os dados novos são publicados no grupo.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupPatch {
+    Name(String),
+    Desc(String),
+    AddChannel { name: String, kind: ChannelKind },
+    EditChannel { id: String, name: Option<String>, topic: Option<String> },
+    /// `dir` negativo sobe, positivo desce, sempre entre canais do mesmo tipo.
+    MoveChannel { id: String, dir: i8 },
+    RemoveChannel(String),
+    Admin { pk: String, on: bool },
+}
+
+impl GroupMeta {
+    /// Aplica uma mudança, com as mesmas regras do celular. Devolve os canais
+    /// que deixaram de existir, para apagar as mensagens deles.
+    pub fn apply(&mut self, patch: &GroupPatch) -> Vec<Channel> {
+        let mut removidos = Vec::new();
+        match patch {
+            GroupPatch::Name(n) => {
+                let n = clamp(n, 40);
+                if !n.is_empty() {
+                    self.name = n;
+                }
+            }
+            GroupPatch::Desc(d) => self.desc = clamp(d, 140),
+            GroupPatch::AddChannel { name, kind } => {
+                let nome = clamp(name, 24);
+                if !nome.is_empty() && self.channels.len() < MAX_CHANNELS {
+                    let mut id = slug(&nome);
+                    while self.channels.iter().any(|c| c.id == id) {
+                        id.push_str("-2");
+                    }
+                    self.channels.push(Channel { id, name: nome, kind: *kind, topic: None });
+                }
+            }
+            GroupPatch::EditChannel { id, name, topic } => {
+                if let Some(c) = self.channels.iter_mut().find(|c| &c.id == id) {
+                    if let Some(n) = name {
+                        let n = clamp(n, 24);
+                        if !n.is_empty() {
+                            c.name = n;
+                        }
+                    }
+                    if let Some(t) = topic {
+                        let t = clamp(t, 80);
+                        c.topic = (!t.is_empty()).then_some(t);
+                    }
+                }
+            }
+            GroupPatch::MoveChannel { id, dir } => {
+                if let Some(i) = self.channels.iter().position(|c| &c.id == id) {
+                    let passo: isize = if *dir < 0 { -1 } else { 1 };
+                    let tipo = self.channels[i].kind;
+                    let mut j = i as isize + passo;
+                    while j >= 0 && (j as usize) < self.channels.len() && self.channels[j as usize].kind != tipo {
+                        j += passo;
+                    }
+                    if j >= 0 && (j as usize) < self.channels.len() {
+                        self.channels.swap(i, j as usize);
+                    }
+                }
+            }
+            GroupPatch::RemoveChannel(id) => {
+                if let Some(c) = self.channels.iter().find(|c| &c.id == id).cloned() {
+                    let ultimo_texto = c.kind == ChannelKind::Text && self.text_channels().count() == 1;
+                    if !ultimo_texto {
+                        self.channels.retain(|x| x.id != c.id);
+                        removidos.push(c);
+                    }
+                }
+            }
+            GroupPatch::Admin { pk, on } => {
+                if *on {
+                    if is_hex64(pk) && !self.admins.contains(pk) && self.admins.len() < MAX_ADMINS {
+                        self.admins.push(pk.clone());
+                    }
+                } else if pk != &self.owner {
+                    self.admins.retain(|a| a != pk);
+                }
+            }
+        }
+        removidos
     }
 }
 
@@ -320,6 +414,73 @@ pub fn slug(s: &str) -> String {
         "canal".into()
     } else {
         limpo
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    fn meta() -> GroupMeta {
+        let dono = Keys::generate();
+        Group::create("Turma", &dono.public_key(), "Ana", Template::Jogos).meta
+    }
+
+    #[test]
+    fn grupo_novo_leva_o_id_estavel_nos_dados() {
+        let dono = Keys::generate();
+        let g = Group::create("Turma", &dono.public_key(), "Ana", Template::Amigos);
+        assert_eq!(g.meta.lid.as_deref(), Some(g.lid.as_str()));
+    }
+
+    #[test]
+    fn criar_canal_com_nome_repetido_ganha_sufixo() {
+        let mut m = meta();
+        m.apply(&GroupPatch::AddChannel { name: "geral".into(), kind: ChannelKind::Text });
+        assert!(m.channels.iter().any(|c| c.id == "geral-2"));
+    }
+
+    #[test]
+    fn mover_canal_pula_os_de_outro_tipo() {
+        let mut m = meta(); // geral, clipes (texto); Jogatina, Sala 2 (voz)
+        m.apply(&GroupPatch::MoveChannel { id: "clipes".into(), dir: 1 });
+        // Não há outro canal de texto abaixo de "clipes": nada muda.
+        assert_eq!(m.channels[1].id, "clipes");
+        m.apply(&GroupPatch::MoveChannel { id: "clipes".into(), dir: -1 });
+        assert_eq!(m.channels[0].id, "clipes");
+        assert_eq!(m.channels[1].id, "geral");
+    }
+
+    #[test]
+    fn ultimo_canal_de_texto_nao_pode_ser_apagado() {
+        let mut m = meta();
+        assert_eq!(m.apply(&GroupPatch::RemoveChannel("clipes".into())).len(), 1);
+        assert!(m.apply(&GroupPatch::RemoveChannel("geral".into())).is_empty());
+        assert!(m.channels.iter().any(|c| c.id == "geral"));
+    }
+
+    #[test]
+    fn dono_nunca_perde_o_cargo_de_admin() {
+        let mut m = meta();
+        let dono = m.owner.clone();
+        m.apply(&GroupPatch::Admin { pk: dono.clone(), on: false });
+        assert!(m.is_admin(&dono));
+        let outro = "b".repeat(64);
+        m.apply(&GroupPatch::Admin { pk: outro.clone(), on: true });
+        assert!(m.is_admin(&outro));
+        m.apply(&GroupPatch::Admin { pk: outro.clone(), on: false });
+        assert!(!m.is_admin(&outro));
+    }
+
+    #[test]
+    fn descricao_do_canal_pode_ser_tirada() {
+        let mut m = meta();
+        m.apply(&GroupPatch::EditChannel { id: "geral".into(), name: Some("conversa".into()), topic: Some("tudo".into()) });
+        let c = m.channels.iter().find(|c| c.id == "geral").unwrap();
+        assert_eq!(c.name, "conversa");
+        assert_eq!(c.topic.as_deref(), Some("tudo"));
+        m.apply(&GroupPatch::EditChannel { id: "geral".into(), name: None, topic: Some(String::new()) });
+        assert!(m.channels.iter().find(|c| c.id == "geral").unwrap().topic.is_none());
     }
 }
 

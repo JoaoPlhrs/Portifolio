@@ -122,13 +122,15 @@ async fn grupo_com_canais_funciona_de_ponta_a_ponta() {
 
     // Convida Beto.
     ana.add_contact(&npub_beto).await.unwrap();
+    // Convite só vale de contato aceito (regra do celular).
+    beto.accept_contact(&ana.public_key().to_hex()).await.unwrap();
     ana.invite_to_group(&g.lid, &beto.public_key().to_hex()).await.unwrap();
 
     // Beto recebe o convite como mensagem, mas ainda não participa.
     let recebeu = timeout(Duration::from_secs(12), async {
         while let Some(ev) = ev_beto.recv().await {
             if let EngineEvent::Message { message, .. } = ev {
-                if let MessageBody::Invite { lid, name } = &message.body {
+                if let MessageBody::Invite { lid, name, .. } = &message.body {
                     return Some((lid.clone(), name.clone()));
                 }
             }
@@ -211,6 +213,8 @@ async fn sair_do_grupo_apaga_os_canais_deste_aparelho() {
 
     let g = ana.create_group("Temporário", Template::Branco).await.unwrap();
     ana.add_contact(&npub_beto).await.unwrap();
+    // Convite só vale de contato aceito (regra do celular).
+    beto.accept_contact(&ana.public_key().to_hex()).await.unwrap();
     ana.invite_to_group(&g.lid, &beto.public_key().to_hex()).await.unwrap();
 
     let chegou = timeout(Duration::from_secs(12), async {
@@ -271,6 +275,8 @@ async fn so_admin_muda_os_dados_do_grupo() {
 
     let g = ana.create_group("Regras", Template::Branco).await.unwrap();
     ana.add_contact(&npub_beto).await.unwrap();
+    // Convite só vale de contato aceito (regra do celular).
+    beto.accept_contact(&ana.public_key().to_hex()).await.unwrap();
     ana.invite_to_group(&g.lid, &beto.public_key().to_hex()).await.unwrap();
     let lid = timeout(Duration::from_secs(12), async {
         while let Some(ev) = ev_beto.recv().await {
