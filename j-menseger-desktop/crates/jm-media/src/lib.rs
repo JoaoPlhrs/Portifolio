@@ -5,8 +5,14 @@
 //! threads próprias, longe da interface e da rede.
 
 pub mod audio;
+pub mod audiofile;
+pub mod builtin;
 pub mod codec;
+pub mod container;
 pub mod peer;
+pub mod photo;
+pub mod player;
+pub mod recorder;
 pub mod screen;
 pub mod video;
 
