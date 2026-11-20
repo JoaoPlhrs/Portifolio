@@ -129,7 +129,10 @@ pub fn incoming<'a>(m: &'a Main, c: &'a CallInfo, video: bool) -> El<'a> {
     let nome = m.name_of(&c.peer);
     container(
         column![
-            ui::ringed(ui::avatar(&nome, m.tone_of(&c.peer), m.pic_of(&c.peer), 96.0), 96.0, Some(t::accent())),
+            stack![
+                iced::widget::canvas(crate::canvas::Pulse { t: m.motion.clock(), color: t::accent(), inner: 52.0 }).width(170).height(170),
+                container(ui::ringed(ui::avatar(&nome, m.tone_of(&c.peer), m.pic_of(&c.peer), 96.0), 96.0, Some(t::accent()))).center(170),
+            ],
             text(nome).size(22).font(BOLD).color(t::FG),
             text(if video { "Chamada de vídeo chegando" } else { "Chamada de voz chegando" }).size(14).color(t::accent()),
             ui::vspace(6.0),
@@ -467,7 +470,7 @@ pub fn stage(m: &Main) -> El<'_> {
     }
     if sons_aberto {
         camadas.push(
-            container(opaque(crate::v_chat::sounds_popup(m, true)))
+            container(ui::slide(opaque(crate::v_chat::sounds_popup(m, true)), 0.0, (1.0 - m.motion.v(&m.motion.popup)) * 14.0))
                 .align_bottom(Length::Fill)
                 .center_x(Length::Fill)
                 .padding(Padding { bottom: BASE - 6.0, ..Padding::ZERO })

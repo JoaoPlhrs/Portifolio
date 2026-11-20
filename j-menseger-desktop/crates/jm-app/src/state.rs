@@ -521,6 +521,7 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    pub motion: crate::motion::Motion,
     /// Mostrar aos contatos a música do Spotify.
     pub listen_share: bool,
     /// Música vista agora no Spotify e quando começou (ms).
@@ -622,6 +623,7 @@ impl Main {
             chats_dirty: false,
             qr: None,
             call_full: false,
+            motion: Default::default(),
             listen_share: false,
             now_playing: None,
             np_polling: false,
@@ -648,6 +650,7 @@ impl Main {
         m.audio = m.engine.ui_pref("audio").unwrap_or_default();
         m.gif_keys = m.engine.ui_pref("gifs").unwrap_or_default();
         m.listen_share = m.engine.ui_pref("spotify").unwrap_or(false);
+        m.motion.enabled = m.engine.ui_pref("animacoes").unwrap_or(true);
         let e = Arc::clone(&m.engine);
         let task = Task::batch([
             iced::window::oldest().map(Msg::WindowId),
@@ -726,6 +729,46 @@ impl Main {
         self.chat.as_ref().is_some_and(|c| {
             c.messages.iter().rev().take(40).any(|m| matches!(&m.body, jm_core::engine::MessageBody::Media(x) if is_gif_mime(&x.mime) && self.anims.contains_key(&x.mid)))
         })
+    }
+
+    /// Chave do item selecionado na barra da esquerda.
+    pub fn rail_key(&self) -> String {
+        match &self.section {
+            Section::Chats => "chats".into(),
+            Section::Calls => "calls".into(),
+            Section::Group(lid) => lid.clone(),
+            Section::Settings => "settings".into(),
+        }
+    }
+
+    /// Como a tela está, para saber o que acabou de aparecer.
+    pub fn snapshot(&self) -> crate::motion::Snapshot {
+        crate::motion::Snapshot {
+            modal: self.modal.as_ref().map(std::mem::discriminant),
+            modal_key: match &self.modal {
+                Some(Modal::Profile { pk, .. }) => pk.clone(),
+                Some(Modal::Viewer { mid }) => mid.clone(),
+                _ => String::new(),
+            },
+            popup: self.popup.clone(),
+            menu: self.menu.is_some(),
+            toast: self.toast.as_ref().map(|t| t.0.clone()),
+            page: if self.section == Section::Settings { format!("{:?}", self.page) } else { String::new() },
+            rail_sel: self.rail_key(),
+            ringing: self.call.as_ref().is_some_and(|c| matches!(c.state, crate::calls::CallState::Ringing { .. })),
+        }
+    }
+
+    /// Algo na tela anima o tempo todo (pontinhos de "digitando", aviso de
+    /// chamada, carregando).
+    pub fn needs_frames(&self) -> bool {
+        if !self.focused || !self.motion.enabled {
+            return false;
+        }
+        let agora = jm_core::engine::now_ms();
+        self.typing.values().any(|(_, ate)| *ate > agora)
+            || self.call.as_ref().is_some_and(|c| matches!(c.state, crate::calls::CallState::Ringing { .. }))
+            || (self.popup == Some(Popup::Gif) && (self.gif.loading || self.gif.sending.is_some()))
     }
 
     /// O que alguém está ouvindo (você incluído).

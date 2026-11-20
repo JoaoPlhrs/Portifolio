@@ -15,6 +15,7 @@ mod calls;
 mod canvas;
 mod gifs;
 mod icons;
+mod motion;
 mod nowplaying;
 mod platform;
 mod sounds;

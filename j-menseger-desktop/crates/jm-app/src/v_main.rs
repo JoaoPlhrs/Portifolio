@@ -48,12 +48,12 @@ impl Main {
 
         if let Some(c) = &self.call {
             if let CallState::Ringing { video } = c.state {
-                camadas.push(modal_layer(crate::v_call::incoming(self, c, video), false));
+                camadas.push(modal_layer(crate::v_call::incoming(self, c, video), false, self.motion.v(&self.motion.ring)));
             }
         }
 
         if let Some(m) = &self.modal {
-            camadas.push(modal_layer(crate::v_modal::view(self, m), true));
+            camadas.push(modal_layer(crate::v_modal::view(self, m), true, self.motion.v(&self.motion.modal)));
         }
 
         if let Some(menu) = &self.menu {
@@ -61,8 +61,9 @@ impl Main {
         }
 
         if let Some((txt, _)) = &self.toast {
+            let sobe = (1.0 - self.motion.v(&self.motion.toast)) * 56.0;
             camadas.push(
-                container(container(text(txt.clone()).size(14).color(t::FG)).padding([10, 18]).style(t::toast))
+                container(ui::slide(container(text(txt.clone()).size(14).color(t::FG)).padding([10, 18]).style(t::toast), 0.0, sobe))
                     .align_bottom(Length::Fill)
                     .center_x(Length::Fill)
                     .padding(Padding { bottom: 92.0, ..Padding::ZERO })
@@ -79,17 +80,23 @@ impl Main {
         col = col.push(ui::vspace(4.0));
 
         let n_conversas = self.dm_unread() + self.requests().len() as u32;
+        let sel = self.section == Section::Chats;
+        let anim = self.motion.rail_of("chats", sel);
         col = col.push(rail_entry(
-            self.section == Section::Chats,
-            container(icon(Icon::Chat, 22.0, if self.section == Section::Chats { t::accent_ink() } else { t::FG })).center(48).into(),
+            "chats",
+            anim,
+            container(icon(Icon::Chat, 22.0, if anim.1 > 0.5 { t::accent_ink() } else { t::FG })).center(48).into(),
             "Conversas",
             Msg::Go(Section::Chats),
             n_conversas,
             false,
         ));
+        let sel = self.section == Section::Calls;
+        let anim = self.motion.rail_of("calls", sel);
         col = col.push(rail_entry(
-            self.section == Section::Calls,
-            container(icon(Icon::Phone, 22.0, if self.section == Section::Calls { t::accent_ink() } else { t::FG })).center(48).into(),
+            "calls",
+            anim,
+            container(icon(Icon::Phone, 22.0, if anim.1 > 0.5 { t::accent_ink() } else { t::FG })).center(48).into(),
             "Chamadas",
             Msg::Go(Section::Calls),
             0,
@@ -100,18 +107,19 @@ impl Main {
         let mut grupos = column![].spacing(8).align_x(Alignment::Center);
         for g in &self.groups {
             let sel = self.section == Section::Group(g.lid.clone());
+            let anim = self.motion.rail_of(&g.lid, sel);
             let pic = self.pic(g.pic.as_deref());
             let conteudo: El<'_> = match pic {
                 Some(h) => iced::widget::image(h)
                     .width(48)
                     .height(48)
                     .content_fit(iced::ContentFit::Cover)
-                    .border_radius(if sel { 16.0 } else { 24.0 })
+                    .border_radius(rail_radius(anim))
                     .into(),
                 None => container(text(t::initials(&g.meta.name)).size(16).font(SEMI)).center(48).into(),
             };
             let em_sala = self.room.as_ref().is_some_and(|r| r.lid == g.lid);
-            grupos = grupos.push(rail_entry(sel, conteudo, &g.meta.name, Msg::Go(Section::Group(g.lid.clone())), if g.muted { 0 } else { self.group_unread(&g.lid) }, em_sala));
+            grupos = grupos.push(rail_entry(&g.lid, anim, conteudo, &g.meta.name, Msg::Go(Section::Group(g.lid.clone())), if g.muted { 0 } else { self.group_unread(&g.lid) }, em_sala));
         }
         grupos = grupos.push(ui::tip(
             button(container(icon(Icon::Plus, 22.0, t::accent())).center(48))
@@ -130,9 +138,11 @@ impl Main {
         )));
 
         let aviso = self.words_pending;
+        let anim = self.motion.rail_of("settings", self.section == Section::Settings);
         col = col.push(rail_entry(
-            self.section == Section::Settings,
-            container(icon(Icon::Settings, 22.0, if self.section == Section::Settings { t::accent_ink() } else { t::FG })).center(48).into(),
+            "settings",
+            anim,
+            container(icon(Icon::Settings, 22.0, if anim.1 > 0.5 { t::accent_ink() } else { t::FG })).center(48).into(),
             if aviso { "Ajustes · anote sua chave de recuperação" } else { "Ajustes" },
             Msg::Go(Section::Settings),
             u32::from(aviso),
@@ -282,7 +292,7 @@ impl Main {
         let sel = self.chat.as_ref().is_some_and(|x| x.key == c.key);
         let digitando = self.typing_in(&c.key).is_some();
         let previa: El<'a> = if digitando {
-            text("digitando…").size(13).color(t::accent()).into()
+            ui::typing_label(self.motion.clock(), 13.0)
         } else {
             let mut r = row![].spacing(4).align_y(Alignment::Center);
             if c.last_from_me && c.last_kind != "sys" {
@@ -413,7 +423,7 @@ impl Main {
 
     fn content(&self) -> El<'_> {
         let principal: El<'_> = if self.section == Section::Settings {
-            crate::v_settings::page(self)
+            ui::slide(crate::v_settings::page(self), (1.0 - self.motion.v(&self.motion.page)) * 28.0, 0.0)
         } else if self.show_requests {
             self.requests_page()
         } else if let Some(c) = &self.chat {
@@ -446,7 +456,7 @@ impl Main {
         let em_voz = self.room.is_some() || self.call.as_ref().is_some_and(|c| matches!(c.state, CallState::Active { .. } | CallState::Reconnecting));
         if self.popup == Some(Popup::CallSounds) && em_voz {
             camadas.push(
-                container(opaque(crate::v_chat::sounds_popup(self, true)))
+                container(ui::slide(opaque(crate::v_chat::sounds_popup(self, true)), 0.0, (1.0 - self.motion.v(&self.motion.popup)) * 14.0))
                     .align_top(Length::Fill)
                     .center_x(Length::Fill)
                     .padding(Padding { top: 236.0, ..Padding::ZERO })
@@ -621,7 +631,7 @@ impl Main {
         let caixa = container(column(itens).spacing(2)).padding(6).width(largura).style(t::panel);
         stack![
             mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill)).on_press(Msg::CloseOverlays).on_right_press(Msg::CloseOverlays),
-            pin(opaque(caixa)).position(Point::new(x, y)),
+            pin(ui::slide(opaque(caixa), 0.0, (1.0 - self.motion.v(&self.motion.menu)) * -8.0)).position(Point::new(x, y)),
         ]
         .into()
     }
@@ -672,9 +682,21 @@ impl Main {
 }
 
 /// Uma entrada da barra da esquerda, com marcador de selecionado e selo.
-fn rail_entry<'a>(sel: bool, conteudo: El<'a>, label: &str, msg: Msg, n: u32, voz: bool) -> El<'a> {
-    let marcador = container(Space::new()).width(4).height(if sel { 36 } else if n > 0 { 8 } else { 0 }).style(t::rounded(t::FG, 2.0));
-    let b = button(conteudo).padding(0).width(48).height(48).style(t::rail_item(sel)).on_press(msg);
+/// Canto do ícone: círculo parado, quadrado arredondado com o mouse em
+/// cima ou selecionado.
+fn rail_radius((hover, sel): (f32, f32)) -> f32 {
+    24.0 - 8.0 * hover.max(sel)
+}
+
+/// Item da barra da esquerda. `anim` = (mouse em cima, selecionado), de 0
+/// a 1: o marcador cresce (8 → 20 → 36 px) e o canto muda, como no Discord.
+fn rail_entry<'a>(key: &str, anim: (f32, f32), conteudo: El<'a>, label: &str, msg: Msg, n: u32, voz: bool) -> El<'a> {
+    let (hover, sel) = anim;
+    let base = if n > 0 { 8.0 } else { 0.0 };
+    let com_mouse = base + (20.0_f32 - base).max(0.0) * hover;
+    let altura = com_mouse + (36.0 - com_mouse) * sel;
+    let marcador = container(Space::new()).width(4).height(altura.max(0.0)).style(t::rounded(t::FG, 2.0));
+    let b = button(conteudo).padding(0).width(48).height(48).style(t::rail_item_r(sel, rail_radius(anim))).on_press(msg);
     let mut camada = vec![b.into()];
     if n > 0 {
         let s = if n > 99 { "99+".to_string() } else { n.to_string() };
@@ -699,7 +721,7 @@ fn rail_entry<'a>(sel: bool, conteudo: El<'a>, label: &str, msg: Msg, n: u32, vo
                 .into(),
         );
     }
-    let item = stack(camada).width(52).height(52);
+    let item = mouse_area(stack(camada).width(52).height(52)).on_enter(Msg::RailHover(Some(key.to_string()))).on_exit(Msg::RailHover(None));
     let r = row![container(marcador).center_y(52).width(8), ui::tip(item, label.to_string(), tooltip::Position::Right), ui::hspace(12.0)]
         .align_y(Alignment::Center);
     r.into()
@@ -717,9 +739,9 @@ pub fn status_icon<'a>(st: Delivery, size: f32) -> El<'a> {
 
 /// Camada de janela: fundo escurecido e a janela no centro. Clicar fora
 /// fecha (quando a janela permite).
-pub fn modal_layer<'a>(content: El<'a>, closable: bool) -> El<'a> {
-    let caixa = opaque(content);
-    let fundo = container(caixa).center(Length::Fill).padding(24).style(t::scrim);
+pub fn modal_layer<'a>(content: El<'a>, closable: bool, t_: f32) -> El<'a> {
+    let caixa = ui::slide(opaque(content), 0.0, (1.0 - t_) * 26.0);
+    let fundo = container(caixa).center(Length::Fill).padding(24).style(t::scrim_a(t_));
     if closable {
         mouse_area(fundo).on_press(Msg::Key(Key::Escape)).into()
     } else {

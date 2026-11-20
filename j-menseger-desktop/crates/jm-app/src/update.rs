@@ -240,6 +240,35 @@ impl Main {
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
+            Msg::Frame(quando) => {
+                self.motion.now = quando.max(self.motion.now);
+                return Task::none();
+            }
+            Msg::RailHover(k) => {
+                self.motion.hover(k);
+                return Task::none();
+            }
+            _ => {}
+        }
+        let antes = self.snapshot();
+        let r = self.update_inner(msg);
+        let depois = self.snapshot();
+        if antes != depois {
+            self.motion.react(&antes, &depois);
+        }
+        r
+    }
+
+    fn update_inner(&mut self, msg: Msg) -> Task<Msg> {
+        match msg {
+            Msg::Frame(_) | Msg::RailHover(_) => Task::none(),
+            Msg::SetAnimations(on) => {
+                self.motion.enabled = on;
+                if let Err(e) = self.engine.set_ui_pref("animacoes", &on) {
+                    tracing::warn!("opção de animações não salva: {e}");
+                }
+                Task::none()
+            }
             Msg::Engine(ev) => self.on_engine(*ev),
             Msg::Tick => self.on_tick(),
             Msg::Noop => Task::none(),

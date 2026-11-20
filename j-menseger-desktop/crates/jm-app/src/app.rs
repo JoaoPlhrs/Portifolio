@@ -241,6 +241,10 @@ pub enum Msg {
     GifFromFile,
     AnimReady(String, Option<std::sync::Arc<crate::state::Anim>>),
     NowPlaying(Option<crate::nowplaying::Track>),
+    /// Um quadro novo da tela (enquanto algo anima).
+    Frame(std::time::Instant),
+    RailHover(Option<String>),
+    SetAnimations(bool),
     ListenShare(bool),
     /// Liga ou desliga a chamada em tela cheia.
     CallFull(bool),
@@ -392,7 +396,11 @@ impl App {
             Screen::Main(m) => m.tick_period(),
             _ => std::time::Duration::from_secs(2),
         };
-        Subscription::batch([iced::time::every(periodo).map(|_| Msg::Tick), iced::event::listen_with(on_event)])
+        let quadros = match &self.screen {
+            Screen::Main(m) if m.motion.running() || m.needs_frames() => iced::window::frames().map(Msg::Frame),
+            _ => Subscription::none(),
+        };
+        Subscription::batch([iced::time::every(periodo).map(|_| Msg::Tick), iced::event::listen_with(on_event), quadros])
     }
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {

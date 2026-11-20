@@ -356,3 +356,52 @@ mod tests {
         assert!((ix - 500.0).abs() < 1e-3 && (iy - 250.0).abs() < 1e-3);
     }
 }
+
+/* ------------------------------------------------------------ animações */
+
+/// Arco girando (carregando).
+pub struct Spinner {
+    pub t: f32,
+    pub color: Color,
+}
+
+impl canvas::Program<Msg> for Spinner {
+    type State = ();
+    fn draw(&self, _: &(), r: &Renderer, _: &Theme, b: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let mut f = Frame::new(r, b.size());
+        let c = Point::new(b.width / 2.0, b.height / 2.0);
+        let raio = b.width.min(b.height) / 2.0 - 2.0;
+        let ini = self.t * 6.0;
+        let fundo = Path::circle(c, raio);
+        f.stroke(&fundo, Stroke::default().with_width(2.5).with_color(t::with_alpha(self.color, 0.2)));
+        let arco = Path::new(|p| {
+            p.arc(canvas::path::Arc { center: c, radius: raio, start_angle: iced::Radians(ini), end_angle: iced::Radians(ini + 4.2) });
+        });
+        f.stroke(&arco, Stroke::default().with_width(2.5).with_color(self.color).with_line_cap(canvas::LineCap::Round));
+        vec![f.into_geometry()]
+    }
+}
+
+/// Ondas saindo do avatar (chamada chegando).
+pub struct Pulse {
+    pub t: f32,
+    pub color: Color,
+    /// Raio do avatar no centro.
+    pub inner: f32,
+}
+
+impl canvas::Program<Msg> for Pulse {
+    type State = ();
+    fn draw(&self, _: &(), r: &Renderer, _: &Theme, b: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let mut f = Frame::new(r, b.size());
+        let c = Point::new(b.width / 2.0, b.height / 2.0);
+        let max = b.width.min(b.height) / 2.0 - 1.0;
+        for k in 0..3 {
+            let p = ((self.t / 1.6) + k as f32 / 3.0).fract();
+            let raio = self.inner + (max - self.inner) * p;
+            let a = (1.0 - p).powf(1.6) * 0.55;
+            f.stroke(&Path::circle(c, raio), Stroke::default().with_width(2.0 + 2.0 * (1.0 - p)).with_color(t::with_alpha(self.color, a)));
+        }
+        vec![f.into_geometry()]
+    }
+}

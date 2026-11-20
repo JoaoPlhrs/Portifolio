@@ -248,6 +248,28 @@ pub fn header(_: &Theme) -> container::Style {
     }
 }
 
+pub fn scrim_a(a: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style { background: Some(Background::Color(with_alpha(Color::BLACK, 0.62 * a.clamp(0.0, 1.0)))), ..Default::default() }
+}
+
+/// Item da barra da esquerda com o canto animado (círculo → quadrado
+/// arredondado, como no Discord).
+pub fn rail_item_r(sel: f32, radius: f32) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let base = match status {
+            button::Status::Hovered => surface_hi(),
+            _ => surface(),
+        };
+        let bg = mix(base, accent(), sel.clamp(0.0, 1.0));
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if sel > 0.5 { accent_ink() } else { FG },
+            border: Border { radius: radius.into(), ..Default::default() },
+            ..Default::default()
+        }
+    }
+}
+
 pub fn scrim(_: &Theme) -> container::Style {
     container::Style { background: Some(Background::Color(with_alpha(Color::BLACK, 0.62))), ..Default::default() }
 }

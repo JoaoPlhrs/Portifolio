@@ -400,3 +400,35 @@ mod tests {
         assert_eq!(split_links("sem link"), vec![("sem link".to_string(), false)]);
     }
 }
+
+/// Desloca o conteúdo (entradas animadas). Parado, não muda nada: o
+/// `float` repassa o estado do conteúdo, então ligar e desligar o
+/// deslocamento não perde foco nem rolagem.
+pub fn slide<'a>(content: impl Into<El<'a>>, dx: f32, dy: f32) -> El<'a> {
+    if dx.abs() < 0.3 && dy.abs() < 0.3 {
+        return content.into();
+    }
+    iced::widget::float(content).translate(move |_, _| iced::Vector::new(dx, dy)).into()
+}
+
+/// Três pontinhos pulando, como o "digitando" do Discord.
+pub fn typing_dots<'a>(clock: f32, cor: Color) -> El<'a> {
+    let pontos: Vec<El<'a>> = (0..3)
+        .map(|i| {
+            let fase = (clock * 7.0 - i as f32 * 0.9).sin().max(0.0);
+            let sobe = fase * 3.5;
+            column![
+                Space::new().height(3.5 - sobe),
+                container(Space::new()).width(5).height(5).style(t::rounded(t::with_alpha(cor, 0.55 + 0.45 * fase), 3.0)),
+                Space::new().height(sobe),
+            ]
+            .into()
+        })
+        .collect();
+    row(pontos).spacing(3).align_y(Alignment::End).into()
+}
+
+/// "digitando" com os pontinhos animados.
+pub fn typing_label<'a>(clock: f32, size: f32) -> El<'a> {
+    row![typing_dots(clock, t::accent()), text("digitando").size(size).color(t::accent())].spacing(6).align_y(Alignment::Center).into()
+}

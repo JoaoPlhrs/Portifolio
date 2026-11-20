@@ -27,7 +27,7 @@ pub fn view<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
         };
         if let Some(caixa) = caixa {
             camadas.push(
-                container(iced::widget::opaque(caixa))
+                container(ui::slide(iced::widget::opaque(caixa), 0.0, (1.0 - m.motion.v(&m.motion.popup)) * 14.0))
                     .align_bottom(Length::Fill)
                     .align_left(Length::Fill)
                     .padding(Padding { left: 14.0, bottom: 6.0, ..Padding::ZERO })
@@ -47,7 +47,7 @@ fn header<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
             let contato = m.contacts.get(&peer);
             let ttl = m.summary(&c.key).map(|s| s.ttl).unwrap_or(0);
             let estado: El<'a> = if m.typing_in(&c.key).is_some() {
-                text("digitando…").size(12.5).color(t::accent()).into()
+                ui::typing_label(m.motion.clock(), 12.5)
             } else {
                 match contato.map(|x| x.status) {
                     Some(ContactStatus::Request) => text("Fora dos seus contatos").size(12.5).color(t::WARN).into(),
@@ -719,8 +719,20 @@ fn gif_popup<'a>(m: &'a Main) -> El<'a> {
         .style(t::input);
     let corpo: El<'a> = if let Some(e) = &g.error {
         container(text(e.clone()).size(13).color(t::DANGER)).center_x(Length::Fill).padding(30).into()
+    } else if g.hits.is_empty() && g.loading {
+        container(
+            row![
+                iced::widget::canvas(crate::canvas::Spinner { t: m.motion.clock(), color: t::accent() }).width(22).height(22),
+                text("Buscando…").size(13).color(t::FG_DIM)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .center_x(Length::Fill)
+        .padding(30)
+        .into()
     } else if g.hits.is_empty() {
-        let msg = if g.loading { "Buscando…" } else if g.query.trim().is_empty() { "" } else { "Nenhum GIF encontrado." };
+        let msg = if g.query.trim().is_empty() { "" } else { "Nenhum GIF encontrado." };
         container(text(msg).size(13).color(t::FG_DIM)).center_x(Length::Fill).padding(30).into()
     } else {
         let lado = (largura - 20.0 - 8.0 - 12.0) / 2.0;
