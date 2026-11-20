@@ -113,6 +113,21 @@ local, conferidos tela a tela, mais uma terceira conta de teste
 | Manter conectado em segundo plano | — | No computador o app precisa estar aberto (pode ficar minimizado) |
 | Vibrar | — | — |
 
+## Novidades que só o computador tem por enquanto
+
+Feitas primeiro no computador; o celular ainda precisa ser atualizado para
+entender cada uma. Enquanto isso, o que o celular faz com elas está na
+última coluna.
+
+| Recurso | Como foi conferido | No celular de hoje |
+|---|---|---|
+| Código de convite curto (`XXXX-XXXX`, vale 7 dias) | Beto adicionou a Ana só pelo código curto (teste `codigo_curto_encontra_a_pessoa`) | Não aceita o código curto; o código longo e o QR continuam valendo |
+| Banner do perfil (recortado em 3:1) | Banner da Ana apareceu no perfil dela visto pelo Beto | Ignora o banner (`pban`) |
+| Jogos favoritos no perfil (até 6) | Jogos da Ana apareceram no perfil dela visto pelo Beto | Ignora a lista (`g`) |
+| GIFs: busca no Tenor ou no GIPHY com a chave da própria pessoa, GIF do computador, GIF animado na conversa | GIF mandado do arquivo chegou ao Beto e anima nos dois lados; grade da busca conferida com GIFs locais; chave falsa recusada pelo Tenor com aviso claro. **A busca com uma chave de verdade não foi feita** (não havia chave) | Recusa a mídia `image/gif` (não aparece) |
+| Voz e áudio: escolher microfone e saída, volume do microfone e das chamadas, testar o microfone | Tela conferida; escolher o dispositivo pelo nome fez o microfone funcionar numa chamada onde o padrão do sistema falhava; o teste mostra o erro do sistema quando falha | — (no celular quem escolhe é o sistema) |
+| Chamada em tela cheia no estilo Discord (F11, Esc para sair) | Chamada 1:1 com e sem transmissão de tela, e sala de voz com duas pessoas | — |
+
 ## O que ainda não foi executado de verdade
 
 - O programa e o instalador no **Windows** (são gerados aqui por compilação
@@ -120,3 +135,6 @@ local, conferidos tela a tela, mais uma terceira conta de teste
 - **Microfone e alto-falante reais**: gravação de voz e de sons, e ouvir uma
   chamada. A conexão das chamadas e salas foi conferida; o som, não.
 - Notificações do sistema e o bloqueio de capturas, que dependem do Windows.
+- A **tela cheia de verdade** da chamada: no ambiente de teste não há
+  gerenciador de janelas, então o palco foi conferido dentro da janela.
+- A **busca de GIFs com uma chave real** do Tenor ou do GIPHY.

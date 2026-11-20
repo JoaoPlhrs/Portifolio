@@ -28,6 +28,10 @@ com o que foi executado para conferir cada um, está em
 | Soundboard (de fábrica, gravar, importar, cortar, na chamada) | **Pronto** | Som criado no editor, mandado e tocado na sala; gravação depende de microfone |
 | Transmissão de tela | **Pronto** | A tela de um aplicativo apareceu ao vivo dentro da chamada do outro |
 | Ajustes (perfil, privacidade, aparência, rede, armazenamento) | **Pronto** | Todas as páginas abertas; cor e fundo mantidos ao reabrir |
+| Código de convite curto, banner e jogos favoritos no perfil | **Pronto** (o celular ainda não entende) | Testes entre duas contas e conferido na interface |
+| Ajustes de voz e áudio (microfone, saída, volumes, teste) | **Pronto** | Escolher o microfone pelo nome funcionou onde o padrão falhava; sem som real aqui |
+| Chamada em tela cheia no estilo Discord | **Pronto** | Chamada 1:1, transmissão e sala de voz; tela cheia real depende de um gerenciador de janelas |
+| GIFs (Tenor/GIPHY com a sua chave, do computador, animados) | **Pronto** (o celular ainda não mostra) | GIF enviado e animado nos dois lados; busca real não testada por falta de chave |
 | Executável e instalador do Windows | **Gerados, não executados** | Compilação cruzada daqui; instalar e rodar só se testa num Windows |
 | Mandar a câmera do computador | **Não implementado** | O computador recebe a câmera do celular, mas não manda a própria |
 | Ler QR pela câmera | **Não implementado** | O computador mostra o próprio QR; para adicionar, cola-se o código |
@@ -87,7 +91,7 @@ J_MENSEGER_DATA=/tmp/beto/jm.db J_MENSEGER_RELAYS=ws://127.0.0.1:7781 cargo run 
 ## Gerar o programa para Windows
 
 **Pronto para baixar:** o programa já compilado fica em
-[`packaging/windows/dist/J-Menseger-0.2.0-portatil.exe`](packaging/windows/dist/J-Menseger-0.2.0-portatil.exe).
+[`packaging/windows/dist/J-Menseger-0.3.0-portatil.exe`](packaging/windows/dist/J-Menseger-0.3.0-portatil.exe).
 É um arquivo só: baixe e abra, sem instalar.
 
 O aplicativo é Rust com duas dependências em C: **libvpx** (vídeo) e **libopus**
@@ -116,7 +120,7 @@ Saem dois arquivos:
 | Arquivo | O que é |
 |---|---|
 | `target/x86_64-pc-windows-gnu/release/j-menseger.exe` | O programa, sozinho. Roda sem instalar |
-| `target/J-Menseger-0.2.0-instalador.exe` | Instalador, com atalho, ícone e desinstalador |
+| `target/J-Menseger-0.3.0-instalador.exe` | Instalador, com atalho, ícone e desinstalador |
 
 **O que foi conferido aqui:** o `.exe` é um PE64 de interface gráfica (não abre
 console), tem o ícone e os dados do programa embutidos, e só depende de DLLs do
@@ -189,8 +193,9 @@ cargo run --example terceira_pessoa -p jm-app -- /tmp/caio ws://127.0.0.1:7781 n
 Nos testes automáticos não há janela de escolher arquivo do sistema. Por isso,
 **só na versão de desenvolvimento**, a tecla F9 abre o arquivo indicado em
 `J_MENSEGER_TESTE_ARQUIVO` como se tivesse sido escolhido
-(`J_MENSEGER_TESTE_ALVO` = `foto`, `perfil` ou `som`). Isso não existe na
-versão final.
+(`J_MENSEGER_TESTE_ALVO` = `foto`, `perfil`, `banner` ou `som`; com
+`gifgrade`, enche a grade de GIFs com o GIF do arquivo, para conferir o
+desenho sem chave de API). Isso não existe na versão final.
 
 ### Além dos testes automáticos
 
