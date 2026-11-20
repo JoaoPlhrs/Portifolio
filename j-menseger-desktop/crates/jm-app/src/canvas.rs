@@ -212,7 +212,10 @@ pub struct Crop {
     pub h: f32,
     pub x: f32,
     pub y: f32,
+    /// Largura do recorte; a altura é `side / ratio`.
     pub side: f32,
+    /// Largura ÷ altura: 1 para foto, 3 para banner.
+    pub ratio: f32,
 }
 
 #[derive(Default)]
@@ -252,7 +255,7 @@ impl canvas::Program<Msg> for Crop {
                 let (ix, iy) = self.to_img(p, tam);
                 let (k, _, _) = self.fit(tam);
                 let alca = 16.0 / k;
-                let canto = (ix - (self.x + self.side)).abs() < alca && (iy - (self.y + self.side)).abs() < alca;
+                let canto = (ix - (self.x + self.side)).abs() < alca && (iy - (self.y + self.side / self.ratio)).abs() < alca;
                 state.modo = Some(if canto {
                     CropMode::Resize
                 } else {
@@ -267,7 +270,7 @@ impl canvas::Program<Msg> for Crop {
                 let msg = match modo {
                     CropMode::Move { dx, dy } => Msg::CropSet(ix - dx, iy - dy, self.side),
                     CropMode::Resize => {
-                        let lado = ((ix - self.x).max(iy - self.y)).min(self.w - self.x).min(self.h - self.y);
+                        let lado = ((ix - self.x).max((iy - self.y) * self.ratio)).min(self.w - self.x).min((self.h - self.y) * self.ratio);
                         Msg::CropSet(self.x, self.y, lado)
                     }
                 };
@@ -283,9 +286,9 @@ impl canvas::Program<Msg> for Crop {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
                     mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
                 };
-                let novo = (self.side * (1.0 + dy * 0.06)).clamp(16.0, self.w.min(self.h));
-                let c = (self.x + self.side / 2.0, self.y + self.side / 2.0);
-                Some(Action::publish(Msg::CropSet(c.0 - novo / 2.0, c.1 - novo / 2.0, novo)).and_capture())
+                let novo = (self.side * (1.0 + dy * 0.06)).clamp(16.0, self.w.min(self.h * self.ratio));
+                let c = (self.x + self.side / 2.0, self.y + self.side / self.ratio / 2.0);
+                Some(Action::publish(Msg::CropSet(c.0 - novo / 2.0, c.1 - novo / self.ratio / 2.0, novo)).and_capture())
             }
             _ => None,
         }
@@ -295,16 +298,19 @@ impl canvas::Program<Msg> for Crop {
         let mut f = Frame::new(renderer, bounds.size());
         let (k, ox, oy) = self.fit(bounds.size());
         let (x, y, s) = (ox + self.x * k, oy + self.y * k, self.side * k);
+        let sh = s / self.ratio;
         let (iw, ih) = (self.w * k, self.h * k);
         let escuro = t::with_alpha(Color::BLACK, 0.55);
         f.fill_rectangle(Point::new(ox, oy), Size::new(iw, (y - oy).max(0.0)), escuro);
-        f.fill_rectangle(Point::new(ox, y + s), Size::new(iw, (oy + ih - y - s).max(0.0)), escuro);
-        f.fill_rectangle(Point::new(ox, y), Size::new((x - ox).max(0.0), s), escuro);
-        f.fill_rectangle(Point::new(x + s, y), Size::new((ox + iw - x - s).max(0.0), s), escuro);
-        f.stroke(&Path::rectangle(Point::new(x, y), Size::new(s, s)), Stroke::default().with_color(t::accent()).with_width(2.0));
-        // Prévia do recorte redondo do avatar.
-        f.stroke(&Path::circle(Point::new(x + s / 2.0, y + s / 2.0), s / 2.0), Stroke::default().with_color(t::with_alpha(Color::WHITE, 0.6)).with_width(1.0));
-        f.fill(&Path::circle(Point::new(x + s, y + s), 7.0), t::accent());
+        f.fill_rectangle(Point::new(ox, y + sh), Size::new(iw, (oy + ih - y - sh).max(0.0)), escuro);
+        f.fill_rectangle(Point::new(ox, y), Size::new((x - ox).max(0.0), sh), escuro);
+        f.fill_rectangle(Point::new(x + s, y), Size::new((ox + iw - x - s).max(0.0), sh), escuro);
+        f.stroke(&Path::rectangle(Point::new(x, y), Size::new(s, sh)), Stroke::default().with_color(t::accent()).with_width(2.0));
+        if self.ratio == 1.0 {
+            // Prévia do recorte redondo do avatar.
+            f.stroke(&Path::circle(Point::new(x + s / 2.0, y + s / 2.0), s / 2.0), Stroke::default().with_color(t::with_alpha(Color::WHITE, 0.6)).with_width(1.0));
+        }
+        f.fill(&Path::circle(Point::new(x + s, y + sh), 7.0), t::accent());
         vec![f.into_geometry()]
     }
 
@@ -342,7 +348,7 @@ mod tests {
 
     #[test]
     fn recorte_converte_tela_para_foto() {
-        let c = Crop { w: 1000.0, h: 500.0, x: 0.0, y: 0.0, side: 400.0 };
+        let c = Crop { w: 1000.0, h: 500.0, x: 0.0, y: 0.0, side: 400.0, ratio: 1.0 };
         // Área 500×500: a foto (2:1) ocupa 500×250 centralizada na vertical.
         let (k, ox, oy) = c.fit(Size::new(500.0, 500.0));
         assert!((k - 0.5).abs() < 1e-6 && ox.abs() < 1e-6 && (oy - 125.0).abs() < 1e-6);

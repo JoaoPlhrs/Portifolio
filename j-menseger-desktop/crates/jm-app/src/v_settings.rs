@@ -107,6 +107,14 @@ fn profile(m: &Main) -> El<'_> {
         Some("Seus contatos e grupos recebem as mudanças de forma cifrada. Nada fica público."),
         vec![
             ui::vspace(10.0),
+            banner_view(m, m.me.banner.as_deref(), m.me.tone, 640.0),
+            row![
+                ui::secondary(Some(Icon::Image), if m.me.banner.is_some() { "Mudar banner" } else { "Colocar banner" }, Some(Msg::BannerPick)),
+                if m.me.banner.is_some() { El::from(ui::danger_text(Some(Icon::Trash), "Remover banner", Some(Msg::BannerRemove))) } else { ui::hspace(0.0) },
+            ]
+            .spacing(8)
+            .into(),
+            ui::vspace(10.0),
             row![avatar, column![botoes, ui::note("A foto é recortada em quadrado e reduzida antes de sair do computador.")].spacing(10)]
                 .spacing(22)
                 .align_y(Alignment::Center)
@@ -119,8 +127,54 @@ fn profile(m: &Main) -> El<'_> {
             ui::field("Recado", ui::input("Disponível para conversar", &f.prof_note, Msg::ProfNote).on_submit(Msg::ProfSave)),
             ui::vspace(10.0),
             row![ui::primary(Some(Icon::Check), "Salvar", mudou.then_some(Msg::ProfSave))].into(),
+            ui::label("Jogos favoritos"),
+            ui::note("Aparecem no seu perfil para os seus contatos, como no Discord. Até 6."),
+            games_chips(&m.me.games, true),
+            row![
+                ui::input("Nome do jogo", &f.game, Msg::GameInput).on_submit(Msg::GameAdd).width(Length::Fill),
+                ui::primary(Some(Icon::Plus), "Adicionar", (!f.game.trim().is_empty() && m.me.games.len() < 6).then_some(Msg::GameAdd)),
+            ]
+            .spacing(8)
+            .into(),
         ],
     )
+}
+
+/// Banner do perfil (3:1). Sem imagem, uma faixa na cor do avatar.
+pub fn banner_view<'a>(m: &'a Main, url: Option<&str>, tone: u8, largura: f32) -> El<'a> {
+    let altura = largura / 3.0;
+    match m.pic(url) {
+        Some(h) => iced::widget::image(h)
+            .width(largura)
+            .height(altura)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(12.0)
+            .into(),
+        None => container(Space::new())
+            .width(largura)
+            .height(altura)
+            .style(t::rounded(t::mix(t::tone(tone), t::accent(), 0.25), 12.0))
+            .into(),
+    }
+}
+
+/// Jogos favoritos como etiquetas. `editavel` põe o X para tirar.
+pub fn games_chips<'a>(jogos: &[String], editavel: bool) -> El<'a> {
+    if jogos.is_empty() {
+        return if editavel { ui::note("Nenhum jogo ainda.") } else { Space::new().into() };
+    }
+    let itens: Vec<El<'a>> = jogos
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let mut r = row![icon(Icon::Game, 16.0, t::accent()), text(g.clone()).size(13.5).font(SEMI).color(t::FG)].spacing(6).align_y(Alignment::Center);
+            if editavel {
+                r = r.push(ui::icon_button_sm(Icon::X, "Tirar", Some(Msg::GameRemove(i))));
+            }
+            container(r).padding(if editavel { [2, 4] } else { [6, 10] }).style(t::rounded(t::surface_hi(), 999.0)).into()
+        })
+        .collect();
+    iced::widget::Row::with_children(itens).spacing(8).wrap().into()
 }
 
 /* ------------------------------------------------------------ código */

@@ -197,6 +197,18 @@ pub struct PhotoDraft {
 pub enum CropTarget {
     Me,
     Group(String),
+    /// Banner do seu perfil (retângulo 3:1).
+    Banner,
+}
+
+impl CropTarget {
+    /// Largura ÷ altura do recorte.
+    pub fn ratio(&self) -> f32 {
+        match self {
+            CropTarget::Banner => 3.0,
+            _ => 1.0,
+        }
+    }
 }
 
 /// Foto aberta para recortar (já com a rotação do EXIF aplicada).
@@ -364,6 +376,7 @@ pub struct Forms {
     pub turn_url: String,
     pub turn_user: String,
     pub turn_pass: String,
+    pub game: String,
     pub keys: Option<ExportedKeys>,
     pub reveal_words: bool,
     pub reveal_nsec: bool,

@@ -256,7 +256,18 @@ fn profile<'a>(m: &'a Main, pk: &'a str, nick: &'a str) -> El<'a> {
     let status = c.map(|c| c.status);
     let mut col = column![
         row![ui::fill(), ui::icon_button_sm(Icon::X, "Fechar", Some(Msg::Key(Key::Escape)))],
-        container(ui::avatar(&nome, m.tone_of(pk), m.pic_of(pk), 96.0)).center_x(Length::Fill),
+        // Foto por cima da borda de baixo do banner, como no Discord.
+        stack![
+            column![crate::v_settings::banner_view(m, c.and_then(|c| c.banner.as_deref()), m.tone_of(pk), 400.0), ui::vspace(52.0)],
+            container(
+                container(ui::avatar(&nome, m.tone_of(pk), m.pic_of(pk), 96.0))
+                    .padding(5)
+                    .style(t::rounded(t::surface(), 999.0))
+            )
+            .align_bottom(Length::Fill)
+            .center_x(Length::Fill),
+        ]
+        .width(Length::Fill),
         container(text(nome.clone()).size(21).font(BOLD).color(t::FG)).center_x(Length::Fill),
     ]
     .spacing(8);
@@ -265,6 +276,10 @@ fn profile<'a>(m: &'a Main, pk: &'a str, nick: &'a str) -> El<'a> {
     }
     if let Some(n) = c.map(|c| c.note.clone()).filter(|n| !n.is_empty()) {
         col = col.push(container(text(n).size(13.5).color(t::FG_DIM)).center_x(Length::Fill));
+    }
+    if let Some(jogos) = c.map(|c| &c.games).filter(|g| !g.is_empty()) {
+        col = col.push(ui::label("Jogos favoritos"));
+        col = col.push(crate::v_settings::games_chips(jogos, false));
     }
     let pode = status == Some(ContactStatus::Ok);
     col = col.push(
@@ -716,16 +731,26 @@ fn viewer<'a>(m: &'a Main, mid: &'a str) -> El<'a> {
 
 fn crop<'a>(m: &'a Main, c: &'a CropState) -> El<'a> {
     let lado = (m.size.height - 300.0).clamp(240.0, 460.0);
-    let desenho = canvas(crate::canvas::Crop { w: c.w as f32, h: c.h as f32, x: c.x, y: c.y, side: c.side }).width(lado).height(lado);
+    let desenho = canvas(crate::canvas::Crop { w: c.w as f32, h: c.h as f32, x: c.x, y: c.y, side: c.side, ratio: c.target.ratio() })
+        .width(lado)
+        .height(lado);
     let foto = image(c.handle.clone()).content_fit(ContentFit::Contain).width(lado).height(lado);
     let titulo = match c.target {
         CropTarget::Me => "Foto do perfil",
         CropTarget::Group(_) => "Foto do grupo",
+        CropTarget::Banner => "Banner do perfil",
     };
     card(
         lado + 48.0,
         column![
-            head(titulo, Some("Arraste o quadrado para escolher. A roda do mouse (ou o canto) muda o tamanho.")),
+            head(
+                titulo,
+                Some(if c.target == CropTarget::Banner {
+                    "Arraste o retângulo para escolher a faixa. A roda do mouse (ou o canto) muda o tamanho."
+                } else {
+                    "Arraste o quadrado para escolher. A roda do mouse (ou o canto) muda o tamanho."
+                }),
+            ),
             container(stack![foto, desenho]).style(t::rounded(Color::BLACK, 10.0)),
             row![
                 ui::fill(),

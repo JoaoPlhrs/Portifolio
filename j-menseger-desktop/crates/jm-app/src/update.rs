@@ -1178,6 +1178,44 @@ impl Main {
                 })
             }
             Msg::ProfPhoto => Task::perform(platform::pick_for_crop(CropTarget::Me), Msg::PhotoForCrop),
+            Msg::BannerPick => Task::perform(platform::pick_for_crop(CropTarget::Banner), Msg::PhotoForCrop),
+            Msg::BannerRemove => {
+                let e = self.eng();
+                toast_done(async move { e.update_profile_extras(Some(""), None).await.map(|_| "Banner removido".to_string()).map_err(s) })
+            }
+            Msg::GameInput(v) => {
+                self.forms.game = v.chars().take(30).collect();
+                Task::none()
+            }
+            Msg::GameAdd => {
+                let novo = self.forms.game.trim().to_string();
+                if novo.is_empty() {
+                    return Task::none();
+                }
+                if self.me.games.len() >= jm_core::media::MAX_GAMES {
+                    self.toast("Cabem até 6 jogos. Tire um para pôr outro.");
+                    return Task::none();
+                }
+                if self.me.games.iter().any(|g| g.to_lowercase() == novo.to_lowercase()) {
+                    self.toast("Esse jogo já está na lista.");
+                    return Task::none();
+                }
+                self.forms.game.clear();
+                let mut lista = self.me.games.clone();
+                lista.push(novo);
+                self.me.games = lista.clone();
+                let e = self.eng();
+                done(async move { e.update_profile_extras(None, Some(&lista)).await.map_err(s) })
+            }
+            Msg::GameRemove(i) => {
+                let mut lista = self.me.games.clone();
+                if i < lista.len() {
+                    lista.remove(i);
+                }
+                self.me.games = lista.clone();
+                let e = self.eng();
+                done(async move { e.update_profile_extras(None, Some(&lista)).await.map_err(s) })
+            }
             Msg::ProfPhotoRemove => {
                 let e = self.eng();
                 toast_done(async move { e.update_profile(None, None, None, Some("")).await.map(|_| "Foto removida".to_string()).map_err(s) })
@@ -1616,10 +1654,11 @@ impl Main {
             Msg::PhotoForCrop(r) => {
                 match r {
                     Ok(Some(d)) => {
-                        let lado = d.w.min(d.h) as f32 * 0.9;
+                        let r = d.target.ratio();
+                        let lado = (d.w as f32).min(d.h as f32 * r) * 0.9;
                         self.modal = Some(Modal::Crop(CropState {
                             x: (d.w as f32 - lado) / 2.0,
-                            y: (d.h as f32 - lado) / 2.0,
+                            y: (d.h as f32 - lado / r) / 2.0,
                             side: lado,
                             target: d.target,
                             bytes: d.bytes,
@@ -1636,9 +1675,10 @@ impl Main {
             }
             Msg::CropSet(x, y, side) => {
                 if let Some(Modal::Crop(c)) = &mut self.modal {
-                    c.side = side.clamp(16.0, c.w.min(c.h) as f32);
+                    let r = c.target.ratio();
+                    c.side = side.clamp(16.0, (c.w as f32).min(c.h as f32 * r));
                     c.x = x.clamp(0.0, c.w as f32 - c.side);
-                    c.y = y.clamp(0.0, c.h as f32 - c.side);
+                    c.y = y.clamp(0.0, c.h as f32 - c.side / r);
                 }
                 Task::none()
             }
@@ -1648,15 +1688,27 @@ impl Main {
                     return Task::none();
                 }
                 c.busy = true;
-                let (bytes, area, alvo) = (Arc::clone(&c.bytes), (c.x as u32, c.y as u32, c.side as u32), c.target.clone());
+                let (bytes, alvo) = (Arc::clone(&c.bytes), c.target.clone());
+                let (x, y, lado, r) = (c.x as u32, c.y as u32, c.side as u32, c.target.ratio());
                 let e = self.eng();
                 Task::perform(
                     async move {
-                        let url = tokio::task::spawn_blocking(move || jm_media::photo::avatar(&bytes, Some(area)))
-                            .await
-                            .map_err(s)?
-                            .map_err(|_| "Não deu para usar essa foto.".to_string())?;
+                        let banner = alvo == CropTarget::Banner;
+                        let url = tokio::task::spawn_blocking(move || {
+                            if banner {
+                                jm_media::photo::banner(&bytes, Some((x, y, lado, (lado as f32 / r) as u32)))
+                            } else {
+                                jm_media::photo::avatar(&bytes, Some((x, y, lado)))
+                            }
+                        })
+                        .await
+                        .map_err(s)?
+                        .map_err(|_| "Não deu para usar essa foto.".to_string())?;
                         match alvo {
+                            CropTarget::Banner => {
+                                e.update_profile_extras(Some(&url), None).await.map_err(s)?;
+                                Ok("Banner atualizado. Seus contatos recebem o novo banner.".to_string())
+                            }
                             CropTarget::Me => {
                                 e.update_profile(None, None, None, Some(&url)).await.map_err(s)?;
                                 Ok("Foto atualizada. Seus contatos recebem a nova foto.".to_string())
@@ -2377,6 +2429,7 @@ fn test_hook() -> Task<Msg> {
     match alvo.as_str() {
         "som" => Task::perform(platform::audio_from_path(p), Msg::SbDecoded),
         "perfil" => Task::perform(platform::crop_from_path(CropTarget::Me, p), Msg::PhotoForCrop),
+        "banner" => Task::perform(platform::crop_from_path(CropTarget::Banner, p), Msg::PhotoForCrop),
         "foto" => Task::perform(async move { platform::photo_from_path(p).await.map(Some) }, Msg::PhotoPicked),
         _ => Task::none(),
     }

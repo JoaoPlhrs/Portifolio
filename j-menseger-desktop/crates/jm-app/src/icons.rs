@@ -69,6 +69,7 @@ pub enum Icon {
     Refresh,
     Music,
     Upload,
+    Game,
 }
 
 fn path(i: Icon) -> &'static str {
@@ -132,6 +133,7 @@ fn path(i: Icon) -> &'static str {
         Icon::More => r#"<circle cx="5.5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor"/>"#,
         Icon::Alert => r#"<path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17h.01"/>"#,
         Icon::Refresh => r#"<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/>"#,
+        Icon::Game => r#"<path d="M7.5 7.5h9a4.5 4.5 0 0 1 4.4 5.4l-.9 4.3a2.4 2.4 0 0 1-4.1 1.1L14 16.5h-4l-1.9 1.8A2.4 2.4 0 0 1 4 17.2l-.9-4.3a4.5 4.5 0 0 1 4.4-5.4Z"/><path d="M8 10.5v3M6.5 12h3M15.5 11.2h.01M17.3 13h.01"/>"#,
         Icon::Music => r#"<path d="M9 18V5.5l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>"#,
     }
 }
