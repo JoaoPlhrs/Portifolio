@@ -1,7 +1,8 @@
 //! Busca de GIFs no Tenor e no Giphy.
 //!
-//! A pessoa coloca a própria chave de API nos ajustes. A busca vai direto
-//! deste computador para o serviço escolhido (ele vê o termo buscado e o IP).
+//! As chaves de API são do próprio J-Menseger, embutidas ao compilar. A
+//! busca vai direto deste computador para o serviço (ele vê o termo buscado
+//! e o IP).
 //! O GIF escolhido é baixado aqui e enviado cifrado como uma foto: quem
 //! recebe não acessa o Tenor nem o Giphy.
 
@@ -26,30 +27,57 @@ impl Provider {
     }
 }
 
-/// Chaves e serviço preferido (gravados só neste computador).
+/// Chaves de API **do próprio J-Menseger** (não da pessoa).
+///
+/// Ficam embutidas no programa na hora de compilar. Dá para passar pelas
+/// variáveis `JM_TENOR_KEY` e `JM_GIPHY_KEY` ao compilar, ou escrever aqui.
+/// Vazias, a busca de GIFs fica desligada (GIF do computador continua
+/// funcionando).
+const TENOR_APP_KEY: &str = "";
+const GIPHY_APP_KEY: &str = "";
+
+pub fn tenor_key() -> &'static str {
+    option_env!("JM_TENOR_KEY").filter(|k| !k.trim().is_empty()).unwrap_or(TENOR_APP_KEY).trim()
+}
+
+pub fn giphy_key() -> &'static str {
+    option_env!("JM_GIPHY_KEY").filter(|k| !k.trim().is_empty()).unwrap_or(GIPHY_APP_KEY).trim()
+}
+
+/// Serviço preferido (gravado só neste computador).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GifKeys {
     #[serde(default)]
-    pub tenor: String,
-    #[serde(default)]
-    pub giphy: String,
-    #[serde(default)]
     pub provider: Provider,
+}
+
+/// Quais serviços esta versão do programa tem chave.
+pub fn available() -> Vec<Provider> {
+    let mut v = Vec::new();
+    if !tenor_key().is_empty() {
+        v.push(Provider::Tenor);
+    }
+    if !giphy_key().is_empty() {
+        v.push(Provider::Giphy);
+    }
+    v
 }
 
 impl GifKeys {
     /// Serviço que dá para usar agora: o preferido, ou o outro se só ele
     /// tiver chave.
     pub fn usable(&self) -> Option<(Provider, String)> {
-        let t = self.tenor.trim();
-        let g = self.giphy.trim();
-        match self.provider {
-            Provider::Tenor if !t.is_empty() => Some((Provider::Tenor, t.to_string())),
-            Provider::Giphy if !g.is_empty() => Some((Provider::Giphy, g.to_string())),
-            _ if !t.is_empty() => Some((Provider::Tenor, t.to_string())),
-            _ if !g.is_empty() => Some((Provider::Giphy, g.to_string())),
-            _ => None,
-        }
+        pick(self.provider, tenor_key(), giphy_key())
+    }
+}
+
+fn pick(pref: Provider, t: &str, g: &str) -> Option<(Provider, String)> {
+    match pref {
+        Provider::Tenor if !t.is_empty() => Some((Provider::Tenor, t.to_string())),
+        Provider::Giphy if !g.is_empty() => Some((Provider::Giphy, g.to_string())),
+        _ if !t.is_empty() => Some((Provider::Tenor, t.to_string())),
+        _ if !g.is_empty() => Some((Provider::Giphy, g.to_string())),
+        _ => None,
     }
 }
 
@@ -80,7 +108,7 @@ fn agente() -> ureq::Agent {
 
 fn erro_http(p: Provider, e: ureq::Error) -> String {
     match e {
-        ureq::Error::Status(400 | 401 | 403, _) => format!("O {} recusou a chave. Confira a chave em Ajustes → GIFs.", p.label()),
+        ureq::Error::Status(400 | 401 | 403, _) => format!("O {} recusou a chave do aplicativo. A busca de GIFs volta numa próxima versão.", p.label()),
         ureq::Error::Status(429, _) => format!("Limite de buscas do {} atingido. Tente daqui a pouco.", p.label()),
         ureq::Error::Status(c, _) => format!("O {} respondeu com erro {c}.", p.label()),
         ureq::Error::Transport(t) => format!("Sem conexão com o {}: {t}", p.label()),
@@ -270,13 +298,9 @@ mod tests {
 
     #[test]
     fn usa_o_servico_que_tem_chave() {
-        let mut k = GifKeys::default();
-        assert!(k.usable().is_none());
-        k.giphy = " chave ".into();
-        assert_eq!(k.usable(), Some((Provider::Giphy, "chave".into())));
-        k.tenor = "t".into();
-        assert_eq!(k.usable().unwrap().0, Provider::Tenor);
-        k.provider = Provider::Giphy;
-        assert_eq!(k.usable().unwrap().0, Provider::Giphy);
+        assert!(pick(Provider::Tenor, "", "").is_none());
+        assert_eq!(pick(Provider::Tenor, "", "g"), Some((Provider::Giphy, "g".into())));
+        assert_eq!(pick(Provider::Tenor, "t", "g").unwrap().0, Provider::Tenor);
+        assert_eq!(pick(Provider::Giphy, "t", "g").unwrap().0, Provider::Giphy);
     }
 }

@@ -15,7 +15,7 @@ use crate::identity;
 use crate::media::{self, MediaInfo, Pic};
 use crate::messages::{
     AppMessage, CallAction, CallSignal, ChatKey, Delivery, GroupInvite, MediaHeader, MediaKind,
-    Presence, ReceiptKind, SoundMeta,
+    Listening, Presence, ReceiptKind, SoundMeta,
 };
 use crate::pin::PinLock;
 use crate::protocol::{self, WrapOptions, CHUNK, KIND_APP, KIND_REACTION, KIND_TEXT, KIND_WRAP_EPH};
@@ -297,6 +297,8 @@ pub enum EngineEvent {
     CallsChanged,
     /// Seu perfil mudou.
     ProfileChanged,
+    /// Mudou o que um contato está ouvindo.
+    Listening { pk: String },
     /// Os ajustes mudaram.
     SettingsChanged,
 }
@@ -433,6 +435,10 @@ struct State {
     /// Recibos a mandar, por contato.
     rq: HashMap<String, ReceiptQueue>,
     rq_scheduled: bool,
+    /// O que cada contato está ouvindo e quando avisou.
+    listening: HashMap<String, (Listening, i64)>,
+    /// O que eu estou ouvindo e quando avisei os contatos.
+    my_listening: Option<(Listening, i64)>,
 }
 
 /// Uma conversa como fica na tabela `chats`.
@@ -522,6 +528,8 @@ impl Engine {
                 rooms: HashMap::new(),
                 rq: HashMap::new(),
                 rq_scheduled: false,
+                listening: HashMap::new(),
+                my_listening: None,
             })),
             events: tx,
             started: AtomicBool::new(false),
@@ -983,6 +991,19 @@ impl Engine {
                     ReceiptKind::Read => Delivery::Read,
                 };
                 self.apply_receipts(key, &ids.into_iter().take(200).collect::<Vec<_>>(), status)?;
+            }
+            AppMessage::Listening(l) if !mine => {
+                if !eph || !aceito {
+                    return Ok(());
+                }
+                {
+                    let mut st = self.state.lock().unwrap();
+                    match l.clean() {
+                        Some(l) => st.listening.insert(peer.to_string(), (l, now_ms())),
+                        None => st.listening.remove(peer),
+                    };
+                }
+                let _ = self.events.send(EngineEvent::Listening { pk: peer.into() });
             }
             AppMessage::Typing if !mine => {
                 if eph && self.settings().typing {
@@ -2106,6 +2127,57 @@ impl Engine {
             }
         });
         Ok(())
+    }
+
+    /* ---------------- ouvindo agora ---------------- */
+
+    /// O que um contato está ouvindo (some sozinho se ele parar de avisar).
+    pub fn listening_of(&self, pk: &str) -> Option<Listening> {
+        let st = self.state.lock().unwrap();
+        let (l, quando) = st.listening.get(pk)?;
+        listening_alive(l, *quando, now_ms()).then(|| l.clone())
+    }
+
+    /// O que eu estou mostrando agora.
+    pub fn my_listening(&self) -> Option<Listening> {
+        self.state.lock().unwrap().my_listening.as_ref().map(|x| x.0.clone())
+    }
+
+    /// Conta aos contatos aceitos o que você está ouvindo (`None`: parou ou
+    /// não quer mostrar). Pode chamar sempre: só manda quando muda a música
+    /// ou, tocando a mesma, a cada [`LISTENING_HEARTBEAT_MS`].
+    pub async fn set_listening(self: &Arc<Self>, l: Option<Listening>) {
+        let l = l.and_then(|x| x.clean());
+        let agora = now_ms();
+        let enviar = {
+            let mut st = self.state.lock().unwrap();
+            let antes = st.my_listening.clone();
+            match (&antes, &l) {
+                (None, None) => None,
+                (Some(_), None) => {
+                    st.my_listening = None;
+                    Some(Listening::default())
+                }
+                (Some((a, quando)), Some(n)) if a.same_track(n) && agora - quando < LISTENING_HEARTBEAT_MS => None,
+                (Some((a, _)), Some(n)) if a.same_track(n) => {
+                    let mesma = a.clone();
+                    st.my_listening = Some((mesma.clone(), agora));
+                    Some(mesma)
+                }
+                (_, Some(n)) => {
+                    st.my_listening = Some((n.clone(), agora));
+                    Some(n.clone())
+                }
+            }
+        };
+        let Some(msg) = enviar else { return };
+        let _ = self.events.send(EngineEvent::ProfileChanged);
+        let contatos: Vec<String> = self.contacts().into_iter().filter(|c| c.status == ContactStatus::Ok).map(|c| c.pk).collect();
+        let app = AppMessage::Listening(msg);
+        for pk in contatos {
+            let chat = ChatKey::Direct { peer: pk }.as_string();
+            let _ = self.send_app(&chat, &app, BuildOpts { ephemeral: true, no_ttl: true, no_self_copy: true, ..Default::default() }).await;
+        }
     }
 
     /* ---------------- mídia ---------------- */
@@ -3685,6 +3757,22 @@ fn random_hex(bytes: usize) -> String {
 /// apareceria como a última.
 fn placeholder_ts() -> i64 {
     now_secs() * 1000
+}
+
+/// Tocando a mesma música, o aviso é repetido de tempos em tempos (para
+/// quem abriu o app depois).
+pub const LISTENING_HEARTBEAT_MS: i64 = 4 * 60_000;
+/// Sem aviso novo por este tempo, considera que parou.
+pub const LISTENING_TTL_MS: i64 = 9 * 60_000;
+
+fn listening_alive(l: &Listening, recebido: i64, agora: i64) -> bool {
+    if agora - recebido > LISTENING_TTL_MS {
+        return false;
+    }
+    match l.d {
+        Some(d) if l.st > 0 => agora < l.st + d as i64 * 1000 + 90_000,
+        _ => true,
+    }
 }
 
 pub fn now_ms() -> i64 {

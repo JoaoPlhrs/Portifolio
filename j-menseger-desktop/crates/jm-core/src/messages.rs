@@ -85,6 +85,63 @@ impl Delivery {
     }
 }
 
+/// Música tocando agora (por enquanto, só do Spotify).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Listening {
+    /// Nome da música (vazio: parou de tocar).
+    pub s: String,
+    /// Artista.
+    #[serde(default)]
+    pub a: String,
+    /// Álbum.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub al: String,
+    /// Identificador da faixa no Spotify (22 letras e números).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Quando começou a tocar (ms desde 1970).
+    #[serde(default)]
+    pub st: i64,
+    /// Duração em segundos, quando se sabe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub d: Option<u32>,
+}
+
+fn corta(s: &str, n: usize) -> String {
+    s.chars().filter(|c| !c.is_control()).take(n).collect::<String>().trim().to_string()
+}
+
+impl Listening {
+    /// Limpa o que veio de fora. `None` quando não está tocando nada.
+    pub fn clean(&self) -> Option<Listening> {
+        let s = corta(&self.s, 120);
+        if s.is_empty() {
+            return None;
+        }
+        let id = self.id.as_ref().filter(|i| i.len() == 22 && i.chars().all(|c| c.is_ascii_alphanumeric())).cloned();
+        Some(Listening { s, a: corta(&self.a, 120), al: corta(&self.al, 120), id, st: self.st.max(0), d: self.d.filter(|d| *d > 0 && *d <= 3 * 3600) })
+    }
+
+    /// Mesma faixa (ignora quando começou).
+    pub fn same_track(&self, o: &Listening) -> bool {
+        self.s == o.s && self.a == o.a && self.id == o.id
+    }
+
+    /// Link para ouvir: a faixa, ou uma busca no Spotify.
+    pub fn url(&self) -> String {
+        match &self.id {
+            Some(id) => format!("https://open.spotify.com/track/{id}"),
+            None => {
+                let q: String = format!("{} {}", self.s, self.a)
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c.to_string() } else if c == ' ' { "%20".into() } else { c.to_string().bytes().map(|b| format!("%{b:02X}")).collect() })
+                    .collect();
+                format!("https://open.spotify.com/search/{q}")
+            }
+        }
+    }
+}
+
 /// Mensagem interna do aplicativo (rumor de kind 1400).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t")]
@@ -135,6 +192,9 @@ pub enum AppMessage {
     #[serde(rename = "snd")]
     Sound { id: String },
     /// Convite para um grupo, com a chave do grupo dentro.
+    /// O que a pessoa está ouvindo (`s` vazio: parou). Sempre efêmero.
+    #[serde(rename = "lis")]
+    Listening(Listening),
     #[serde(rename = "ginv")]
     GroupInvite { g: GroupInvite },
     /// O grupo trocou de chave (alguém foi removido).
@@ -316,7 +376,7 @@ impl AppMessage {
     /// Se esta mensagem deve ir em envelope efêmero (não guardada pelo servidor).
     pub fn is_ephemeral(&self) -> bool {
         match self {
-            AppMessage::Typing | AppMessage::Room { .. } => true,
+            AppMessage::Typing | AppMessage::Room { .. } | AppMessage::Listening(_) => true,
             AppMessage::Call(c) => c.a != CallAction::Missed,
             _ => false,
         }
@@ -326,6 +386,23 @@ impl AppMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ouvindo_agora_limpa_e_monta_o_link() {
+        let l = Listening { s: "  Música\u{7}  ".into(), a: "Banda".into(), id: Some("4uLU6hMCjMI75M1A2tKUQC".into()), st: 5, d: Some(200), ..Default::default() };
+        let c = l.clean().unwrap();
+        assert_eq!(c.s, "Música");
+        assert_eq!(c.url(), "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC");
+        let mut sem_id = c.clone();
+        sem_id.id = Some("ruim/../x".into());
+        let sem_id = sem_id.clean().unwrap();
+        assert!(sem_id.id.is_none());
+        assert_eq!(sem_id.url(), "https://open.spotify.com/search/M%C3%BAsica%20Banda".replace("M%C3%BAsica", "Música"));
+        assert!(Listening::default().clean().is_none());
+        let j = AppMessage::Listening(c).to_json();
+        assert!(j.starts_with(r#"{"t":"lis","s":"Música""#), "{j}");
+        assert!(AppMessage::parse(&j).unwrap().is_ephemeral());
+    }
 
     #[test]
     fn chave_de_conversa_vai_e_volta() {

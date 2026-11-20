@@ -253,6 +253,61 @@ fn new_chat(m: &Main) -> El<'_> {
 
 use crate::ui::Trail;
 
+/// Verde do Spotify, para o cartão "Ouvindo".
+pub const SPOTIFY: Color = Color::from_rgb(0x1D as f32 / 255.0, 0xB9 as f32 / 255.0, 0x54 as f32 / 255.0);
+
+/// Cartão "Ouvindo Spotify", como no perfil do Discord.
+pub fn listening_card<'a>(l: &jm_core::messages::Listening) -> El<'a> {
+    let agora = jm_core::engine::now_ms();
+    let passou = ((agora - l.st).max(0) / 1000) as f32;
+    let mut info = column![
+        text(l.s.clone()).size(15).font(BOLD).color(t::FG),
+    ]
+    .spacing(2)
+    .width(Length::Fill);
+    if !l.a.is_empty() {
+        info = info.push(text(format!("de {}", l.a)).size(13).color(t::FG_DIM));
+    }
+    if !l.al.is_empty() {
+        info = info.push(text(format!("em {}", l.al)).size(12.5).color(t::FG_FAINT));
+    }
+    let capa = container(icon(Icon::Music, 30.0, Color::WHITE)).center(64).style(t::rounded(SPOTIFY, 10.0));
+    let mut col = column![
+        row![icon(Icon::Music, 13.0, SPOTIFY), text("OUVINDO SPOTIFY").size(11.5).font(BOLD).color(SPOTIFY)].spacing(6).align_y(Alignment::Center),
+        row![capa, info].spacing(12).align_y(Alignment::Center),
+    ]
+    .spacing(10);
+    match l.d {
+        Some(d) if l.st > 0 => {
+            let pos = passou.min(d as f32);
+            col = col.push(column![
+                iced::widget::progress_bar(0.0..=d as f32, pos).girth(4).style(|_| iced::widget::progress_bar::Style {
+                    background: iced::Background::Color(t::with_alpha(Color::WHITE, 0.12)),
+                    bar: iced::Background::Color(t::FG),
+                    border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                }),
+                row![text(t::mmss(pos)).size(11).color(t::FG_DIM), ui::fill(), text(t::mmss(d as f32)).size(11).color(t::FG_DIM)],
+            ]
+            .spacing(4));
+        }
+        _ if l.st > 0 => col = col.push(text(format!("Tocando há {}", t::mmss(passou))).size(11.5).color(t::FG_DIM)),
+        _ => {}
+    }
+    col = col.push(
+        button(container(row![icon(Icon::Music, 15.0, Color::WHITE), text("Ouvir no Spotify").size(13.5).font(SEMI).color(Color::WHITE)].spacing(8).align_y(Alignment::Center)).center_x(Length::Fill))
+            .padding([8, 12])
+            .width(Length::Fill)
+            .style(|_, st| iced::widget::button::Style {
+                background: Some(iced::Background::Color(if st == iced::widget::button::Status::Hovered { t::mix(SPOTIFY, Color::WHITE, 0.12) } else { SPOTIFY })),
+                text_color: Color::WHITE,
+                border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .on_press(Msg::OpenUrl(l.url())),
+    );
+    container(col).padding(14).width(Length::Fill).style(t::rounded(t::with_alpha(Color::BLACK, 0.22), 12.0)).into()
+}
+
 fn profile<'a>(m: &'a Main, pk: &'a str, nick: &'a str) -> El<'a> {
     let c = m.contacts.get(pk);
     let nome = m.name_of(pk);
@@ -280,6 +335,9 @@ fn profile<'a>(m: &'a Main, pk: &'a str, nick: &'a str) -> El<'a> {
     }
     if let Some(n) = c.map(|c| c.note.clone()).filter(|n| !n.is_empty()) {
         col = col.push(container(text(n).size(13.5).color(t::FG_DIM)).center_x(Length::Fill));
+    }
+    if let Some(l) = m.listening(pk) {
+        col = col.push(listening_card(&l));
     }
     if let Some(jogos) = c.map(|c| &c.games).filter(|g| !g.is_empty()) {
         col = col.push(ui::label("Jogos favoritos"));

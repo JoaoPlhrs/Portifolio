@@ -175,15 +175,23 @@ pub fn members<'a>(m: &'a Main, g: &'a Group) -> El<'a> {
                 ui::ringed(ui::avatar(&nome, m.tone_of(pk), m.pic_of(pk), 30.0), 30.0, falando.then(t::accent)),
                 column![
                     text(ui::ellipsis(&nome, 18)).size(13.5).font(SEMI).color(t::FG),
-                    text(if *pk == me {
-                        "Você".to_string()
-                    } else if g.meta.owner == **pk {
-                        "Criou o grupo".to_string()
-                    } else {
-                        String::new()
-                    })
-                    .size(11.5)
-                    .color(t::FG_FAINT)
+                    match m.listening(pk) {
+                        Some(l) => El::from(
+                            row![icon(Icon::Music, 11.0, crate::v_modal::SPOTIFY), text(ui::ellipsis(&format!("Ouvindo {}", l.s), 24)).size(11.5).color(t::FG_DIM)]
+                                .spacing(4)
+                                .align_y(Alignment::Center)
+                        ),
+                        None => text(if *pk == me {
+                            "Você".to_string()
+                        } else if g.meta.owner == **pk {
+                            "Criou o grupo".to_string()
+                        } else {
+                            String::new()
+                        })
+                        .size(11.5)
+                        .color(t::FG_FAINT)
+                        .into(),
+                    }
                 ]
                 .spacing(0)
                 .width(Length::Fill)

@@ -521,11 +521,14 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    /// Mostrar aos contatos a música do Spotify.
+    pub listen_share: bool,
+    /// Música vista agora no Spotify e quando começou (ms).
+    pub now_playing: Option<(crate::nowplaying::Track, i64)>,
+    pub np_polling: bool,
+    pub np_at: Instant,
     pub gif_keys: crate::gifs::GifKeys,
     pub gif: GifPicker,
-    pub gif_show_keys: bool,
-    pub gif_testing: bool,
-    pub gif_test: Option<Result<usize, String>>,
     /// GIFs já abertos em quadros (por mídia ou endereço da prévia).
     pub anims: HashMap<String, std::sync::Arc<Anim>>,
     pub anim_loading: std::collections::HashSet<String>,
@@ -619,11 +622,12 @@ impl Main {
             chats_dirty: false,
             qr: None,
             call_full: false,
+            listen_share: false,
+            now_playing: None,
+            np_polling: false,
+            np_at: Instant::now() - Duration::from_secs(60),
             gif_keys: Default::default(),
             gif: GifPicker::default(),
-            gif_show_keys: false,
-            gif_testing: false,
-            gif_test: None,
             anims: HashMap::new(),
             anim_loading: Default::default(),
             anim_clock: Instant::now(),
@@ -643,6 +647,7 @@ impl Main {
         m.short_code = m.engine.short_code();
         m.audio = m.engine.ui_pref("audio").unwrap_or_default();
         m.gif_keys = m.engine.ui_pref("gifs").unwrap_or_default();
+        m.listen_share = m.engine.ui_pref("spotify").unwrap_or(false);
         let e = Arc::clone(&m.engine);
         let task = Task::batch([
             iced::window::oldest().map(Msg::WindowId),
@@ -721,6 +726,15 @@ impl Main {
         self.chat.as_ref().is_some_and(|c| {
             c.messages.iter().rev().take(40).any(|m| matches!(&m.body, jm_core::engine::MessageBody::Media(x) if is_gif_mime(&x.mime) && self.anims.contains_key(&x.mid)))
         })
+    }
+
+    /// O que alguém está ouvindo (você incluído).
+    pub fn listening(&self, pk: &str) -> Option<jm_core::messages::Listening> {
+        if pk == self.me_pk() {
+            self.engine.my_listening()
+        } else {
+            self.engine.listening_of(pk)
+        }
     }
 
     /// Quadro atual de um GIF já aberto.

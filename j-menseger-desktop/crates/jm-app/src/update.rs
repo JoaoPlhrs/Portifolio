@@ -114,8 +114,21 @@ impl Main {
         done(async move { e.send_media(&key, d.bytes.to_vec(), meta).await.map(|_| ()).map_err(s) })
     }
 
+    /// Conta (ou para de contar) aos contatos o que está tocando.
+    fn share_listening(&mut self) -> Task<Msg> {
+        let l = self.now_playing.as_ref().filter(|_| self.listen_share).map(|(t, desde)| jm_core::messages::Listening {
+            s: t.title.clone(),
+            a: t.artist.clone(),
+            al: t.album.clone(),
+            id: t.id.clone(),
+            st: *desde,
+            d: t.secs,
+        });
+        let e = self.eng();
+        Task::perform(async move { e.set_listening(l).await }, |_| Msg::Noop)
+    }
+
     fn gif_changed(&mut self) {
-        self.gif_test = None;
         self.gif.hits.clear();
         self.gif.error = None;
         self.gif.from = None;
@@ -524,41 +537,29 @@ impl Main {
                 let Some(Modal::PhotoPreview(d)) = self.modal.take() else { return Task::none() };
                 self.send_draft(d)
             }
-            Msg::GifTenorKey(v) => {
-                self.gif_keys.tenor = v.trim().to_string();
-                self.gif_changed();
-                Task::none()
-            }
-            Msg::GifGiphyKey(v) => {
-                self.gif_keys.giphy = v.trim().to_string();
-                self.gif_changed();
-                Task::none()
-            }
             Msg::GifProviderSet(p) => {
                 self.gif_keys.provider = p;
                 self.gif_changed();
                 Task::none()
             }
-            Msg::GifShowKeys => {
-                self.gif_show_keys = !self.gif_show_keys;
-                Task::none()
-            }
-            Msg::GifTest => {
-                let Some((p, k)) = self.gif_keys.usable() else {
-                    self.gif_test = Some(Err("Coloque uma chave primeiro.".into()));
-                    return Task::none();
+            Msg::NowPlaying(t) => {
+                self.np_polling = false;
+                self.now_playing = match (self.now_playing.take(), t) {
+                    (Some((antes, desde)), Some(n)) if antes.title == n.title && antes.artist == n.artist => Some((n, desde)),
+                    (_, Some(n)) => Some((n, jm_core::engine::now_ms())),
+                    (_, None) => None,
                 };
-                self.gif_testing = true;
-                self.gif_test = None;
-                Task::perform(
-                    async move { tokio::task::spawn_blocking(move || crate::gifs::search(p, &k, "oi").map(|v| v.len())).await.map_err(|e| e.to_string()).and_then(|r| r) },
-                    Msg::GifTestDone,
-                )
+                self.share_listening()
             }
-            Msg::GifTestDone(r) => {
-                self.gif_testing = false;
-                self.gif_test = Some(r);
-                Task::none()
+            Msg::ListenShare(on) => {
+                self.listen_share = on;
+                if let Err(e) = self.engine.set_ui_pref("spotify", &on) {
+                    tracing::warn!("opção do Spotify não salva: {e}");
+                }
+                if on {
+                    self.np_at = Instant::now() - Duration::from_secs(60);
+                }
+                self.share_listening()
             }
             Msg::GifQuery(q) => {
                 self.gif.query = q;
@@ -632,11 +633,6 @@ impl Main {
             Msg::GifFromFile => {
                 self.close_overlays();
                 Task::perform(platform::pick_gif(), Msg::PhotoPicked)
-            }
-            Msg::OpenSettingsPage(p) => {
-                self.close_overlays();
-                self.modal = None;
-                Task::done(Msg::Go(Section::Settings)).chain(Task::done(Msg::Page(p)))
             }
             Msg::AnimReady(k, a) => {
                 self.anim_loading.remove(&k);
@@ -2584,6 +2580,15 @@ impl Main {
                 tarefas.push(self.anim_from_media(mid));
             }
         }
+        let vendo_perfil = self.section == Section::Settings && self.page == SettingsPage::Profile;
+        if (self.listen_share || vendo_perfil) && !self.np_polling && self.np_at.elapsed() >= Duration::from_secs(5) {
+            self.np_polling = true;
+            self.np_at = Instant::now();
+            tarefas.push(Task::perform(
+                async { tokio::task::spawn_blocking(crate::nowplaying::current).await.ok().flatten() },
+                Msg::NowPlaying,
+            ));
+        }
         if let Some(t) = &mut self.mic_test {
             while let Ok(q) = t.rx.try_recv() {
                 if let Some(e) = &t.eco {
@@ -2715,6 +2720,7 @@ impl Main {
                 self.call_log = self.engine.calls(200);
                 Task::none()
             }
+            EngineEvent::Listening { .. } => Task::none(),
             EngineEvent::ProfileChanged => {
                 self.me = self.engine.me();
                 self.refresh_qr();

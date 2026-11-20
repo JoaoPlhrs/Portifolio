@@ -52,6 +52,14 @@ fn header<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
                 match contato.map(|x| x.status) {
                     Some(ContactStatus::Request) => text("Fora dos seus contatos").size(12.5).color(t::WARN).into(),
                     Some(ContactStatus::Blocked) => text("Bloqueado").size(12.5).color(t::DANGER).into(),
+                    _ if m.listening(&peer).is_some() => {
+                        let l = m.listening(&peer).unwrap_or_default();
+                        let quem = if l.a.is_empty() { l.s.clone() } else { format!("{} — {}", l.s, l.a) };
+                        row![icon(Icon::Music, 13.0, crate::v_modal::SPOTIFY), text(ui::ellipsis(&format!("Ouvindo {quem}"), 60)).size(12.5).color(t::FG_DIM)]
+                            .spacing(5)
+                            .align_y(Alignment::Center)
+                            .into()
+                    }
                     _ if ttl > 0 => row![icon(Icon::Timer, 13.0, t::FG_DIM), text(format!("Temporárias: {}", jm_core::engine::ttl_label(ttl))).size(12.5).color(t::FG_DIM)]
                         .spacing(4)
                         .align_y(Alignment::Center)
@@ -686,10 +694,9 @@ fn gif_popup<'a>(m: &'a Main) -> El<'a> {
                 container(
                     column![
                         icon(Icon::Image, 34.0, t::accent()),
-                        text("Busca de GIFs desligada").size(15).font(BOLD).color(t::FG),
-                        text("Coloque uma chave do Tenor ou do GIPHY nos ajustes para buscar GIFs aqui.").size(13).color(t::FG_DIM).align_x(Alignment::Center),
-                        ui::primary(Some(Icon::Settings), "Colocar chave", Some(Msg::OpenSettingsPage(SettingsPage::Gifs))),
-                        do_pc,
+                        text("Busca de GIFs em breve").size(15).font(BOLD).color(t::FG),
+                        text("A busca no Tenor e no GIPHY ainda não está disponível nesta versão. Dá para mandar um GIF do computador.").size(13).color(t::FG_DIM).align_x(Alignment::Center),
+                        ui::primary(Some(Icon::Upload), "GIF do computador", Some(Msg::GifFromFile)),
                     ]
                     .spacing(10)
                     .align_x(Alignment::Center),

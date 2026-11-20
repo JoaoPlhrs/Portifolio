@@ -530,3 +530,19 @@ async fn banner_e_jogos_favoritos_chegam() {
     // Banner grande demais é recusado antes de sair.
     assert!(ana.update_profile_extras(Some(&format!("data:image/jpeg;base64,{}", "A".repeat(30_000))), None).await.is_err());
 }
+
+/// "Ouvindo agora": chega ao contato, a mesma música não é reenviada à toa,
+/// e parar de tocar some do outro lado.
+#[tokio::test(flavor = "multi_thread")]
+async fn ouvindo_agora_chega_ao_contato() {
+    use jm_core::messages::Listening;
+    let Some(relay) = TestRelay::start(7843) else { return };
+    let ((ana, _ra), (beto, _rb)) = dupla(&relay).await;
+    let pk = ana.pk_hex();
+    let musica = Listening { s: "Evidências".into(), a: "Chitãozinho & Xororó".into(), st: jm_core::engine::now_ms(), d: Some(280), ..Default::default() };
+    ana.set_listening(Some(musica.clone())).await;
+    assert!(ate_que(10, || beto.listening_of(&pk).is_some_and(|l| l.s == "Evidências")).await, "música não chegou");
+    assert_eq!(ana.my_listening().unwrap().a, "Chitãozinho & Xororó");
+    ana.set_listening(None).await;
+    assert!(ate_que(10, || beto.listening_of(&pk).is_none()).await, "parar não chegou");
+}

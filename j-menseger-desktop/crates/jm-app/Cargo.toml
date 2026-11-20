@@ -33,7 +33,11 @@ ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Esconder a janela das capturas de tela (SetWindowDisplayAffinity).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Música tocando no Spotify (MPRIS, pelo D-Bus da sessão).
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 # Sem `[target.'cfg(windows)']`: ao compilar do Linux para o Windows essa
 # condição olharia para a máquina que compila, e a dependência não entraria.
