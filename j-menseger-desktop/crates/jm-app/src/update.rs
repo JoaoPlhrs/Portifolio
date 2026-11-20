@@ -1232,6 +1232,18 @@ impl Main {
                 })
             }
             Msg::ProfPhoto => Task::perform(platform::pick_for_crop(CropTarget::Me), Msg::PhotoForCrop),
+            Msg::CallFull(on) => {
+                let on = on && self.in_voice();
+                if on == self.call_full {
+                    return Task::none();
+                }
+                self.call_full = on;
+                self.menu = None;
+                match self.window {
+                    Some(id) => iced::window::set_mode(id, if on { iced::window::Mode::Fullscreen } else { iced::window::Mode::Windowed }),
+                    None => Task::none(),
+                }
+            }
             Msg::AudioRefresh => {
                 self.refresh_devices();
                 Task::none()
@@ -1966,7 +1978,13 @@ impl Main {
                 _ => Task::none(),
             };
         }
+        if k == Key::F11 {
+            return if self.in_voice() { Task::done(Msg::CallFull(!self.call_full)) } else { Task::none() };
+        }
         if k == Key::Escape {
+            if self.call_full && self.menu.is_none() && self.popup.is_none() && self.modal.is_none() {
+                return Task::done(Msg::CallFull(false));
+            }
             if self.menu.is_some() || self.popup.is_some() {
                 self.close_overlays();
             } else if let Some(m) = &self.modal {
@@ -2325,6 +2343,10 @@ impl Main {
             if r.elapsed() >= SOUND_REC_MAX {
                 tarefas.push(Task::done(Msg::SbRecStop));
             }
+        }
+        if self.call_full && !self.in_voice() {
+            // A chamada acabou: volta para a janela normal.
+            tarefas.push(Task::done(Msg::CallFull(false)));
         }
         if let Some(t) = &mut self.mic_test {
             while let Ok(q) = t.rx.try_recv() {

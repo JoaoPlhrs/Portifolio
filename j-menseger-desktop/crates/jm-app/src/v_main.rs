@@ -21,7 +21,11 @@ impl Main {
         if let Some(l) = &self.lock {
             return crate::v_modal::lock_screen(self, l);
         }
-        let base: El<'_> = row![self.rail(), self.sidebar(), self.content()].height(Length::Fill).into();
+        let base: El<'_> = if self.call_full && self.in_voice() {
+            crate::v_call::stage(self)
+        } else {
+            row![self.rail(), self.sidebar(), self.content()].height(Length::Fill).into()
+        };
         let mut camadas: Vec<El<'_>> = vec![container(base).style(t::fill(t::main_bg())).width(Length::Fill).height(Length::Fill).into()];
 
         if self.file_hover {

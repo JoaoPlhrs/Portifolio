@@ -479,6 +479,8 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    /// Chamada ou sala em tela cheia (palco no estilo Discord).
+    pub call_full: bool,
     pub audio: AudioSettings,
     pub audio_inputs: Vec<String>,
     pub audio_outputs: Vec<String>,
@@ -565,6 +567,7 @@ impl Main {
             chats_loading: false,
             chats_dirty: false,
             qr: None,
+            call_full: false,
             audio: AudioSettings::default(),
             audio_inputs: Vec::new(),
             audio_outputs: Vec::new(),
@@ -638,6 +641,12 @@ impl Main {
 
     pub fn refresh_qr(&mut self) {
         self.qr = iced::widget::qr_code::Data::new(self.invite_link()).ok();
+    }
+
+    /// Está numa chamada atendida ou numa sala de voz.
+    pub fn in_voice(&self) -> bool {
+        self.room.is_some()
+            || self.call.as_ref().is_some_and(|c| !matches!(c.state, crate::calls::CallState::Ended { .. } | crate::calls::CallState::Ringing { .. }))
     }
 
     pub fn me_pk(&self) -> String {

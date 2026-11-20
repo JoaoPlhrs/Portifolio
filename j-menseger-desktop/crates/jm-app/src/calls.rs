@@ -145,9 +145,31 @@ struct Link {
     frame: Arc<Mutex<Option<(u64, DecodedFrame)>>>,
     /// Sons próprios já enviados para esta pessoa (não manda duas vezes).
     sent_sounds: std::sync::Mutex<HashSet<String>>,
+    /// Quando chegou a última imagem.
+    frame_at: std::sync::Mutex<Option<Instant>>,
 }
 
+/// Espera antes do primeiro aviso pelo canal de dados.
+///
+/// Os dois lados abrem o mesmo canal combinado (id 0). Se a nossa mensagem
+/// chega antes de o outro lado terminar de abrir a ponta dele, a biblioteca
+/// de WebRTC de lá registra o canal como "vindo de fora" e a ponta dele
+/// nunca abre: aviso de câmera, microfone e soundboard somem na chamada.
+const PRIMEIRA_FALA: Duration = Duration::from_millis(1200);
+
 impl Link {
+    /// A imagem que chega deve aparecer: o outro lado avisou que ligou a
+    /// câmera/tela, ou — se o canal de avisos não abriu deste lado — as
+    /// imagens continuam chegando.
+    fn showing_video(&self) -> bool {
+        let recente = self.frame_at.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+        if self.conn.data_is_open() {
+            recente && self.remote_cam.load(Ordering::Relaxed)
+        } else {
+            recente
+        }
+    }
+
     fn new(pk: &str, conn: Arc<Peer>) -> Arc<Self> {
         Arc::new(Self {
             pk: pk.into(),
@@ -158,6 +180,7 @@ impl Link {
             connected: Arc::new(AtomicBool::new(false)),
             frame: Arc::new(Mutex::new(None)),
             sent_sounds: std::sync::Mutex::new(HashSet::new()),
+            frame_at: std::sync::Mutex::new(None),
         })
     }
 
@@ -305,7 +328,7 @@ impl CallManager {
             remote_muted: !a.link.remote_mic.load(Ordering::Relaxed),
             sem_microfone: a.sem_microfone,
             sharing: a.sharing.as_ref().map(|(n, _)| n.clone()),
-            receiving_video: a.link.remote_cam.load(Ordering::Relaxed) && versao > 0,
+            receiving_video: versao > 0 && a.link.showing_video(),
             frame_version: versao,
             banner,
         })
@@ -680,15 +703,19 @@ impl CallManager {
                     }
                     PeerEvent::State(ConnectionState::Closed) => break,
                     PeerEvent::DataOpen => {
-                        let (cam, mic) = {
-                            let g = eu.active.lock().await;
-                            match g.as_ref() {
-                                Some(a) => (a.sharing.is_some(), !a.muted.load(Ordering::Relaxed)),
-                                None => break,
-                            }
-                        };
-                        link.send(serde_json::json!({ "t": "cam", "on": cam })).await;
-                        link.send(serde_json::json!({ "t": "mic", "on": mic })).await;
+                        let (eu2, l2) = (Arc::clone(&eu), Arc::clone(&link));
+                        tokio::spawn(async move {
+                            tokio::time::sleep(PRIMEIRA_FALA).await;
+                            let (cam, mic) = {
+                                let g = eu2.active.lock().await;
+                                match g.as_ref() {
+                                    Some(a) if Arc::ptr_eq(&a.link, &l2) => (a.sharing.is_some(), !a.muted.load(Ordering::Relaxed)),
+                                    _ => return,
+                                }
+                            };
+                            l2.send(serde_json::json!({ "t": "cam", "on": cam })).await;
+                            l2.send(serde_json::json!({ "t": "mic", "on": mic })).await;
+                        });
                     }
                     PeerEvent::Data(bytes) => eu.on_data(&link, &bytes).await,
                     PeerEvent::Media { kind: MediaKind::Video, data } => {
@@ -700,6 +727,7 @@ impl CallManager {
                                 let mut slot = link.frame.lock().await;
                                 let n = slot.as_ref().map(|(v, _)| v + 1).unwrap_or(1);
                                 *slot = Some((n, img));
+                                *link.frame_at.lock().unwrap() = Some(Instant::now());
                             }
                         }
                     }
@@ -1250,9 +1278,13 @@ impl CallManager {
                         break;
                     }
                     PeerEvent::DataOpen => {
-                        let mic = !eu.room.lock().await.as_ref().map(|r| r.muted.load(Ordering::Relaxed)).unwrap_or(false);
-                        link.send(serde_json::json!({ "t": "cam", "on": false })).await;
-                        link.send(serde_json::json!({ "t": "mic", "on": mic })).await;
+                        let (eu2, l2) = (Arc::clone(&eu), Arc::clone(&link));
+                        tokio::spawn(async move {
+                            tokio::time::sleep(PRIMEIRA_FALA).await;
+                            let mic = !eu2.room.lock().await.as_ref().map(|r| r.muted.load(Ordering::Relaxed)).unwrap_or(false);
+                            l2.send(serde_json::json!({ "t": "cam", "on": false })).await;
+                            l2.send(serde_json::json!({ "t": "mic", "on": mic })).await;
+                        });
                     }
                     PeerEvent::Data(bytes) => eu.on_data(&link, &bytes).await,
                     PeerEvent::Media { kind: MediaKind::Audio, data } => {

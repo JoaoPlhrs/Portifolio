@@ -69,6 +69,7 @@ pub enum Key {
     Backspace,
     Escape,
     Enter,
+    F11,
 }
 
 #[derive(Clone)]
@@ -231,6 +232,8 @@ pub enum Msg {
     ProfSave,
     ProfPhoto,
     ProfPhotoRemove,
+    /// Liga ou desliga a chamada em tela cheia.
+    CallFull(bool),
     AudioInput(String),
     AudioOutput(String),
     AudioGain(f32),
@@ -556,6 +559,7 @@ fn on_event(ev: iced::Event, status: iced::event::Status, id: iced::window::Id) 
                 IKey::Named(Named::Escape) => Some(Msg::Key(Key::Escape)),
                 IKey::Named(Named::Backspace) => Some(Msg::Key(Key::Backspace)),
                 IKey::Named(Named::Enter) => Some(Msg::Key(Key::Enter)),
+                IKey::Named(Named::F11) => Some(Msg::Key(Key::F11)),
                 IKey::Named(Named::F9) if cfg!(debug_assertions) => Some(Msg::TestHook),
                 _ => {
                     let c = text.as_deref().and_then(|s| s.chars().next())?;

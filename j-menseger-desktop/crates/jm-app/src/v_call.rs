@@ -3,12 +3,12 @@
 
 use crate::app::Msg;
 use crate::calls::{duration_label, CallInfo, CallState, RoomInfo, SoundBanner};
-use crate::icons::{icon, Icon};
+use crate::icons::{icon, logo, Icon};
 use crate::state::*;
 use crate::theme::{self as t, CallBtn};
 use crate::ui::{self, El, BOLD, SEMI};
-use iced::widget::{button, column, container, image, row, stack, text, tooltip, Space};
-use iced::{Alignment, ContentFit, Length, Padding};
+use iced::widget::{button, column, container, image, opaque, row, stack, text, tooltip, Space};
+use iced::{Alignment, Color, ContentFit, Length, Padding};
 
 fn round_btn<'a>(i: Icon, kind: CallBtn, label: &str, msg: Option<Msg>) -> El<'a> {
     let cor = match kind {
@@ -112,6 +112,7 @@ pub fn call_panel<'a>(m: &'a Main, c: &'a CallInfo) -> El<'a> {
         } else {
             round_btn(Icon::Screen, CallBtn::Normal, "Transmitir a tela", ativo.then_some(Msg::OpenShare))
         });
+        r = r.push(round_btn(Icon::Maximize, CallBtn::Normal, "Tela cheia (F11)", ativo.then_some(Msg::CallFull(true))));
         r = r.push(round_btn(Icon::PhoneOff, CallBtn::Danger, "Desligar", Some(Msg::HangUp)));
         if !c.muted && !c.sem_microfone {
             r = r.push(mic_meter(c.mic_level));
@@ -200,6 +201,7 @@ pub fn room_panel<'a>(m: &'a Main, r: &'a RoomInfo) -> El<'a> {
                     "Soundboard",
                     Some(Msg::SetPopup(Some(Popup::CallSounds)))
                 ),
+                round_btn(Icon::Maximize, CallBtn::Normal, "Tela cheia (F11)", Some(Msg::CallFull(true))),
                 round_btn(Icon::PhoneOff, CallBtn::Danger, "Sair da sala", Some(Msg::LeaveRoom)),
                 if !r.muted && !r.sem_microfone { mic_meter(r.mic_level) } else { Space::new().into() },
             ]
@@ -293,4 +295,249 @@ pub fn voice_panel(m: &Main) -> Option<El<'_>> {
             .style(t::fill(t::mix(t::sidebar(), iced::Color::BLACK, 0.15)))
             .into(),
     )
+}
+
+/* ------------------------------------------------------------ tela cheia */
+
+/// Uma pessoa no palco da tela cheia.
+struct Quadro {
+    pk: String,
+    nome: String,
+    falando: bool,
+    mudo: bool,
+    conectado: bool,
+    /// Imagem que está chegando dessa pessoa (câmera ou tela).
+    video: Option<image::Handle>,
+    /// Você está transmitindo a tela.
+    ao_vivo: bool,
+}
+
+const TOPO: f32 = 60.0;
+const BASE: f32 = 104.0;
+const GAP: f32 = 12.0;
+
+fn palco_bg() -> Color {
+    t::mix(t::main_bg(), Color::BLACK, 0.62)
+}
+
+/// Chamada ou sala em tela cheia, no jeito do Discord: todo mundo em
+/// quadros grandes, quem fala ganha a borda colorida, controles embaixo.
+pub fn stage(m: &Main) -> El<'_> {
+    let me = m.me_pk();
+    let mut quadros: Vec<Quadro> = Vec::new();
+    let (titulo, sub, since, muted, sem_mic, nivel, banner_som, sair): (String, String, Option<std::time::Instant>, bool, bool, f32, Option<&SoundBanner>, Msg);
+    if let Some(r) = &m.room {
+        let g = m.group(&r.lid);
+        titulo = g.and_then(|g| g.meta.channels.iter().find(|c| c.id == r.ch)).map(|c| c.name.clone()).unwrap_or_else(|| r.ch.clone());
+        sub = g.map(|g| g.meta.name.clone()).unwrap_or_default();
+        since = Some(r.since);
+        (muted, sem_mic, nivel, banner_som, sair) = (r.muted, r.sem_microfone, r.mic_level, r.banner.as_ref(), Msg::LeaveRoom);
+        quadros.push(Quadro { pk: me.clone(), nome: format!("{} (você)", m.first_name(&me)), falando: r.me_speaking && !r.muted, mudo: r.muted, conectado: true, video: None, ao_vivo: false });
+        for p in &r.peers {
+            quadros.push(Quadro { pk: p.pk.clone(), nome: m.name_of(&p.pk), falando: p.speaking, mudo: !p.mic, conectado: p.connected, video: None, ao_vivo: false });
+        }
+    } else if let Some(c) = &m.call {
+        titulo = m.name_of(&c.peer);
+        sub = if c.video { "Chamada de vídeo".into() } else { "Chamada de voz".into() };
+        since = match c.state {
+            CallState::Active { since } => Some(since),
+            _ => None,
+        };
+        (muted, sem_mic, nivel, banner_som, sair) = (c.muted, c.sem_microfone, c.mic_level, c.banner.as_ref(), Msg::HangUp);
+        let video = if c.receiving_video { m.remote_frame.as_ref().map(|(_, h)| h.clone()) } else { None };
+        quadros.push(Quadro {
+            pk: c.peer.clone(),
+            nome: m.name_of(&c.peer),
+            falando: c.remote_speaking && !c.remote_muted,
+            mudo: c.remote_muted,
+            conectado: matches!(c.state, CallState::Active { .. }),
+            video,
+            ao_vivo: false,
+        });
+        quadros.push(Quadro {
+            pk: me.clone(),
+            nome: format!("{} (você)", m.first_name(&me)),
+            falando: !c.muted && c.mic_level > 0.06,
+            mudo: c.muted || c.sem_microfone,
+            conectado: true,
+            video: None,
+            ao_vivo: c.sharing.is_some(),
+        });
+    } else {
+        return Space::new().into();
+    }
+
+    /* ---- topo: marca, onde você está, tempo e sair da tela cheia */
+    let mut onde = row![logo(26.0), text(titulo).size(16).font(BOLD).color(t::FG)].spacing(10).align_y(Alignment::Center);
+    if !sub.is_empty() {
+        onde = onde.push(text("·").size(16).color(t::FG_FAINT)).push(text(sub).size(14).color(t::FG_DIM));
+    }
+    let tempo: El<'_> = match since {
+        Some(s) => container(row![container(Space::new()).width(8).height(8).style(t::rounded(t::accent(), 99.0)), text(duration_label(s)).size(13).font(SEMI).color(t::FG)].spacing(7).align_y(Alignment::Center))
+            .padding([5, 11])
+            .style(t::rounded(Color { a: 0.55, ..Color::BLACK }, 999.0))
+            .into(),
+        None => text("Reconectando…").size(13).color(t::WARN).into(),
+    };
+    let topo = row![
+        onde,
+        ui::fill(),
+        tempo,
+        ui::hspace(10.0),
+        text("Esc para sair").size(12).color(t::FG_FAINT),
+        ui::icon_button(Icon::Minimize, "Sair da tela cheia (Esc)", Some(Msg::CallFull(false)), false),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .height(TOPO)
+    .padding([0, 22]);
+
+    /* ---- palco */
+    let largura = (m.size.width - 48.0).max(200.0);
+    let altura = (m.size.height - TOPO - BASE).max(160.0);
+    let foco = quadros.iter().position(|q| q.video.is_some());
+    let palco: El<'_> = match foco {
+        Some(i) => {
+            // Alguém mandando imagem: ela ocupa o palco, o resto vai para a faixa de baixo.
+            let outros: Vec<&Quadro> = quadros.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, q)| q).collect();
+            let faixa_h = if outros.is_empty() { 0.0 } else { (altura * 0.2).clamp(96.0, 150.0) };
+            let principal = quadro(m, &quadros[i], largura, altura - faixa_h - if outros.is_empty() { 0.0 } else { GAP });
+            let mut col = column![principal].spacing(GAP).align_x(Alignment::Center);
+            if !outros.is_empty() {
+                let w = faixa_h * 16.0 / 9.0;
+                col = col.push(row(outros.into_iter().map(|q| quadro(m, q, w, faixa_h))).spacing(GAP));
+            }
+            col.into()
+        }
+        None => {
+            let (cols, w, h) = grade(quadros.len(), largura, altura);
+            let mut linhas = column![].spacing(GAP).align_x(Alignment::Center);
+            for fila in quadros.chunks(cols) {
+                linhas = linhas.push(row(fila.iter().map(|q| quadro(m, q, w, h))).spacing(GAP));
+            }
+            linhas.into()
+        }
+    };
+
+    /* ---- controles */
+    let em_chamada = m.call.is_some() && m.room.is_none();
+    let sons_aberto = m.popup == Some(Popup::CallSounds);
+    let mut barra = row![
+        round_btn(
+            if muted { Icon::MicOff } else { Icon::Mic },
+            if muted { CallBtn::On } else { CallBtn::Normal },
+            if muted { "Ligar microfone" } else { "Desligar microfone" },
+            Some(Msg::ToggleMute)
+        ),
+        round_btn(Icon::Wave, if sons_aberto { CallBtn::On } else { CallBtn::Normal }, "Soundboard", Some(Msg::SetPopup(if sons_aberto { None } else { Some(Popup::CallSounds) }))),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    if em_chamada {
+        let transmitindo = m.call.as_ref().is_some_and(|c| c.sharing.is_some());
+        barra = barra.push(if transmitindo {
+            round_btn(Icon::Screen, CallBtn::On, "Parar de transmitir", Some(Msg::StopSharing))
+        } else {
+            round_btn(Icon::Screen, CallBtn::Normal, "Transmitir a tela", Some(Msg::OpenShare))
+        });
+    }
+    barra = barra.push(round_btn(Icon::Minimize, CallBtn::Normal, "Sair da tela cheia (Esc)", Some(Msg::CallFull(false))));
+    barra = barra.push(ui::hspace(4.0));
+    barra = barra.push(
+        ui::tip(
+            button(container(icon(Icon::PhoneOff, 22.0, Color::WHITE)).center_y(22).center_x(44))
+                .padding([14, 18])
+                .style(t::call_btn(CallBtn::Danger))
+                .on_press(sair),
+            if em_chamada { "Desligar" } else { "Sair da sala" },
+            tooltip::Position::Top,
+        ),
+    );
+    if !muted && !sem_mic {
+        barra = barra.push(ui::hspace(4.0)).push(mic_meter(nivel));
+    }
+    let base = container(container(barra).padding([10, 16]).style(t::rounded(t::mix(t::surface(), Color::BLACK, 0.25), 18.0)))
+        .center_x(Length::Fill)
+        .height(BASE)
+        .center_y(BASE);
+
+    let mut camadas: Vec<El<'_>> = vec![column![topo, container(palco).center(Length::Fill), base].into()];
+    if let Some(b) = banner_som {
+        camadas.push(container(banner(b)).center_x(Length::Fill).padding(Padding { top: TOPO + 10.0, ..Padding::ZERO }).into());
+    }
+    if sons_aberto {
+        camadas.push(
+            container(opaque(crate::v_chat::sounds_popup(m, true)))
+                .align_bottom(Length::Fill)
+                .center_x(Length::Fill)
+                .padding(Padding { bottom: BASE - 6.0, ..Padding::ZERO })
+                .into(),
+        );
+    }
+    container(stack(camadas).width(Length::Fill).height(Length::Fill)).width(Length::Fill).height(Length::Fill).style(t::fill(palco_bg())).into()
+}
+
+/// Quantas colunas e o tamanho de cada quadro para caber todo mundo no
+/// palco, mantendo 16:9 e o maior tamanho possível.
+fn grade(n: usize, largura: f32, altura: f32) -> (usize, f32, f32) {
+    let n = n.max(1);
+    let mut melhor = (1, 0.0f32, 0.0f32);
+    for cols in 1..=n {
+        let linhas = n.div_ceil(cols);
+        let w_max = (largura - GAP * (cols as f32 - 1.0)) / cols as f32;
+        let h_max = (altura - GAP * (linhas as f32 - 1.0)) / linhas as f32;
+        let w = w_max.min(h_max * 16.0 / 9.0).min(960.0);
+        if w > melhor.1 {
+            melhor = (cols, w, w * 9.0 / 16.0);
+        }
+    }
+    melhor
+}
+
+fn quadro<'a>(m: &'a Main, q: &Quadro, w: f32, h: f32) -> El<'a> {
+    let tom = m.tone_of(&q.pk);
+    let fundo: El<'a> = match &q.video {
+        Some(v) => container(image(v.clone()).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fill)).style(t::rounded(Color::BLACK, 10.0)).into(),
+        None => {
+            let tam = (h * 0.36).clamp(40.0, 132.0);
+            let mut c = column![ui::ringed(ui::avatar(&q.nome, tom, m.pic_of(&q.pk), tam), tam, q.falando.then(t::accent))].align_x(Alignment::Center).spacing(8);
+            if !q.conectado {
+                c = c.push(text("conectando…").size(12.5).color(t::FG_DIM));
+            }
+            if q.ao_vivo {
+                c = c.push(text("Você está transmitindo a sua tela").size(12.5).color(t::FG_DIM));
+            }
+            container(c).center(Length::Fill).style(t::rounded(t::mix(t::tone(tom), Color::BLACK, 0.55), 10.0)).into()
+        }
+    };
+    let pilula = Color { a: 0.62, ..Color::BLACK };
+    let mut nome = row![].spacing(6).align_y(Alignment::Center);
+    if q.mudo {
+        nome = nome.push(icon(Icon::MicOff, 14.0, t::DANGER));
+    }
+    nome = nome.push(text(ui::ellipsis(&q.nome, 28)).size(13).font(SEMI).color(Color::WHITE));
+    let etiqueta = container(container(nome).padding([4, 9]).style(t::rounded(pilula, 6.0)))
+        .align_bottom(Length::Fill)
+        .align_left(Length::Fill)
+        .padding(10);
+    let mut camadas: Vec<El<'a>> = vec![fundo, etiqueta.into()];
+    if q.ao_vivo {
+        camadas.push(
+            container(container(text("AO VIVO").size(11).font(BOLD).color(Color::WHITE)).padding([3, 8]).style(t::rounded(t::DANGER, 5.0)))
+                .align_top(Length::Fill)
+                .align_right(Length::Fill)
+                .padding(10)
+                .into(),
+        );
+    }
+    let falando = q.falando;
+    container(stack(camadas))
+        .width(w)
+        .height(h)
+        .clip(true)
+        .style(move |_| iced::widget::container::Style {
+            border: iced::Border { color: if falando { t::accent() } else { Color::TRANSPARENT }, width: if falando { 3.0 } else { 0.0 }, radius: 10.0.into() },
+            ..Default::default()
+        })
+        .into()
 }
