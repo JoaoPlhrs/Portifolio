@@ -118,6 +118,19 @@ pub fn nsec(keys: &Keys) -> String {
         .unwrap_or_else(|_| keys.secret_key().to_secret_hex())
 }
 
+/// Versão curta a partir da chave em hexadecimal (o que a interface guarda).
+pub fn short_hex(pk_hex: &str) -> String {
+    match PublicKey::from_hex(pk_hex) {
+        Ok(pk) => short_id(&pk),
+        Err(_) => pk_hex.chars().take(8).collect(),
+    }
+}
+
+/// Código público (`npub1…`) a partir da chave em hexadecimal.
+pub fn npub_hex(pk_hex: &str) -> String {
+    PublicKey::from_hex(pk_hex).map(|pk| npub(&pk)).unwrap_or_else(|_| pk_hex.to_string())
+}
+
 /// Versão curta do código público, para caber na tela.
 pub fn short_id(pk: &PublicKey) -> String {
     let n = npub(pk);

@@ -13,22 +13,25 @@ interface é desenhada pela GPU (ou por software, quando não há GPU).
 
 ## Situação de cada parte
 
+O computador tem os mesmos recursos do celular. A comparação item por item,
+com o que foi executado para conferir cada um, está em
+[`PARIDADE.md`](PARIDADE.md).
+
 | Área | Situação | Como foi verificado |
 |---|---|---|
-| Conta e 12 palavras | **Pronto** | Testes comparam o Rust contra vetores das mesmas bibliotecas JavaScript do celular: mesma chave, mesmo `npub`, mesmo `nsec` |
-| Mensagens | **Pronto** | Dois aplicativos conversando por servidor real, com recibo de entrega e leitura |
-| Pedidos de conversa | **Pronto** | Aceitar e bloquear; só contato aceito pode ligar |
-| Grupos e canais | **Pronto** | Convite com a chave do grupo, canais de texto, membros, entrada e saída |
-| Chamadas de voz | **Pronto** (sem hardware de áudio aqui) | Conexão WebRTC entre dois aplicativos; áudio Opus atravessou a conexão nos testes |
-| Transmissão de tela | **Pronto** | A tela de um computador apareceu dentro do outro |
-| Executável do Windows | **Compilado, não executado** | Gerado aqui por compilação cruzada; conferidos o formato, o ícone embutido e as DLLs exigidas. Falta rodar num Windows de verdade |
-| Instalador do Windows | **Gerado, não executado** | `makensis` produziu o instalador; instalar e desinstalar só se testa no Windows |
-| Câmera | **Não implementado** | Não havia câmera para testar |
-| Codificação por hardware | **Não implementado** | Só software (VP8 por libvpx). NVENC, AMF e Quick Sync não existem no código |
-| Mídia em conversas (fotos, áudios, arquivos) | **Não implementado** | O protocolo já prevê; falta a interface |
-| Salas de voz de grupo | **Não implementado** | Aparecem marcadas como "em breve", sem botão falso |
-| Notificações do sistema e ícone na bandeja | **Não implementado** | — |
-| Tela de configurações | **Não implementado** | Escolha de microfone e alto-falante ainda usa o padrão do sistema |
+| Conta, 12 palavras, PIN e tela de bloqueio | **Pronto** | Vetores das bibliotecas do celular; fluxo de criação e bloqueio percorrido na interface |
+| Mensagens (respostas, reações, apagar, temporárias, recibos) | **Pronto** | Dois aplicativos conversando por servidor local, conferidos tela a tela |
+| Fotos, mensagens de voz e sons nas conversas | **Pronto** | Enviados e recebidos entre os aplicativos; formatos do celular nos testes |
+| Contatos, pedidos, bloqueados, número de segurança | **Pronto** | Pedido de uma terceira conta aceito pela interface |
+| Grupos (canais, admins, convites, foto) | **Pronto** | Grupo criado, convite aceito, conversa no canal |
+| Salas de voz e chamadas 1:1 | **Pronto** (sem hardware de áudio aqui) | Conexões feitas entre dois aplicativos; o som não pôde ser ouvido neste ambiente |
+| Soundboard (de fábrica, gravar, importar, cortar, na chamada) | **Pronto** | Som criado no editor, mandado e tocado na sala; gravação depende de microfone |
+| Transmissão de tela | **Pronto** | A tela de um aplicativo apareceu ao vivo dentro da chamada do outro |
+| Ajustes (perfil, privacidade, aparência, rede, armazenamento) | **Pronto** | Todas as páginas abertas; cor e fundo mantidos ao reabrir |
+| Executável e instalador do Windows | **Gerados, não executados** | Compilação cruzada daqui; instalar e rodar só se testa num Windows |
+| Mandar a câmera do computador | **Não implementado** | O computador recebe a câmera do celular, mas não manda a própria |
+| Ler QR pela câmera | **Não implementado** | O computador mostra o próprio QR; para adicionar, cola-se o código |
+| Chave da conta num cofre do sistema | **Não implementado** | Fica no banco local sem cifra extra (fraqueza conhecida, explicada no app) |
 
 Nada nesta tabela é marcado como pronto sem ter sido executado.
 
@@ -38,7 +41,7 @@ Nada nesta tabela é marcado como pronto sem ter sido executado.
 crates/
   jm-core/     protocolo cifrado, servidores, identidade, banco, motor
   jm-media/    áudio (Opus), vídeo (VP8), conexão WebRTC, captura de tela
-  jm-app/      interface nativa em Iced e gerenciador de chamadas
+  jm-app/      interface nativa em Iced, chamadas e soundboard
 tools/
   testrelay.mjs   servidor Nostr local para testes
 ```
@@ -83,6 +86,10 @@ J_MENSEGER_DATA=/tmp/beto/jm.db J_MENSEGER_RELAYS=ws://127.0.0.1:7781 cargo run 
 
 ## Gerar o programa para Windows
 
+**Pronto para baixar:** o programa já compilado fica em
+[`packaging/windows/dist/J-Menseger-0.2.0-portatil.exe`](packaging/windows/dist/J-Menseger-0.2.0-portatil.exe).
+É um arquivo só: baixe e abra, sem instalar.
+
 O aplicativo é Rust com duas dependências em C: **libvpx** (vídeo) e **libopus**
 (voz). Tudo o mais usa bibliotecas que já vêm no Windows, então o executável
 final **não acompanha nenhuma DLL**.
@@ -109,7 +116,7 @@ Saem dois arquivos:
 | Arquivo | O que é |
 |---|---|
 | `target/x86_64-pc-windows-gnu/release/j-menseger.exe` | O programa, sozinho. Roda sem instalar |
-| `target/J-Menseger-0.1.0-instalador.exe` | Instalador, com atalho, ícone e desinstalador |
+| `target/J-Menseger-0.2.0-instalador.exe` | Instalador, com atalho, ícone e desinstalador |
 
 **O que foi conferido aqui:** o `.exe` é um PE64 de interface gráfica (não abre
 console), tem o ícone e os dados do programa embutidos, e só depende de DLLs do
@@ -148,7 +155,7 @@ packaging/linux/instalar.sh      # instala em ~/.local
 cargo test --workspace
 ```
 
-São 108 testes. Os que dependem de rede sobem o servidor local de
+São 172 testes automáticos. Os que dependem de rede sobem o servidor local de
 `tools/` automaticamente (rode `npm install` lá antes). Os de tela e de
 chamada são pulados com aviso quando não há tela ou rede utilizável, em vez de
 falharem por algo que não é defeito.
@@ -168,6 +175,22 @@ O que os testes cobrem, resumido:
 - **Chamada:** dois pares conectam e o áudio atravessa a conexão cifrada.
 - **Tela:** 60 capturas seguidas sem esgotar o sistema, compressão real, e os
   quadros recebidos virando imagem do tamanho certo.
+
+### Testando a interface
+
+A interface foi conferida dirigindo dois aplicativos de verdade (com
+`xdotool` sobre um Xvfb) contra o servidor local, e com uma terceira conta que
+manda foto, voz e som:
+
+```bash
+cargo run --example terceira_pessoa -p jm-app -- /tmp/caio ws://127.0.0.1:7781 npub1…
+```
+
+Nos testes automáticos não há janela de escolher arquivo do sistema. Por isso,
+**só na versão de desenvolvimento**, a tecla F9 abre o arquivo indicado em
+`J_MENSEGER_TESTE_ARQUIVO` como se tivesse sido escolhido
+(`J_MENSEGER_TESTE_ALVO` = `foto`, `perfil` ou `som`). Isso não existe na
+versão final.
 
 ### Além dos testes automáticos
 

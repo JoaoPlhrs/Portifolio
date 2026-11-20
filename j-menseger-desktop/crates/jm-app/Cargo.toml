@@ -20,7 +20,18 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util = "0.3"
-iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced"] }
+iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced", "qr_code", "canvas"] }
+base64 = "0.22"
+# Horário local (o fuso vem do sistema).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Escolher arquivos: diálogo nativo no Windows, portal do sistema no Linux.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# Notificações do sistema (Linux via D-Bus, Windows via WinRT).
+notify-rust = "4"
+
+[target.'cfg(windows)'.dependencies]
+# Esconder a janela das capturas de tela (SetWindowDisplayAffinity).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 # Sem `[target.'cfg(windows)']`: ao compilar do Linux para o Windows essa
 # condição olharia para a máquina que compila, e a dependência não entraria.

@@ -138,7 +138,6 @@ pub struct RoomInfo {
 struct Link {
     pk: String,
     conn: Arc<Peer>,
-    playback: Option<Playback>,
     speaking: Arc<AtomicBool>,
     remote_mic: Arc<AtomicBool>,
     remote_cam: Arc<AtomicBool>,
@@ -153,7 +152,6 @@ impl Link {
         Arc::new(Self {
             pk: pk.into(),
             conn,
-            playback: None,
             speaking: Arc::new(AtomicBool::new(false)),
             remote_mic: Arc::new(AtomicBool::new(true)),
             remote_cam: Arc::new(AtomicBool::new(false)),

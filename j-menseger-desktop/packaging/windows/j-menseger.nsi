@@ -10,7 +10,7 @@
 Unicode true
 
 !define NOME        "J-Menseger"
-!define VERSAO      "0.1.0"
+!define VERSAO      "0.2.0"
 !define PUBLICADOR  "J-Menseger"
 !define EXECUTAVEL  "j-menseger.exe"
 !define CHAVE       "Software\Microsoft\Windows\CurrentVersion\Uninstall\J-Menseger"

@@ -1932,7 +1932,7 @@ impl Engine {
         Ok(())
     }
 
-    fn mark_read(&self, chat_key: &str) -> Result<()> {
+    pub fn mark_read(&self, chat_key: &str) -> Result<()> {
         let (peer, pend) = {
             let store = self.store.lock().unwrap();
             let mut c = chat_for(&store, chat_key);
@@ -3183,6 +3183,17 @@ impl Engine {
 
     pub fn set_sound_volume(&self, v: f32) -> Result<()> {
         self.store.lock().unwrap().set_kv("sb_volume", &v.clamp(0.0, 1.0))?;
+        Ok(())
+    }
+
+    /// Preferência só da interface (aparência e afins). Fica num espaço de
+    /// chaves próprio (`ui.`), separado do que o protocolo usa.
+    pub fn ui_pref<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.store.lock().unwrap().get_kv(&format!("ui.{key}")).ok().flatten()
+    }
+
+    pub fn set_ui_pref<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        self.store.lock().unwrap().set_kv(&format!("ui.{key}"), value)?;
         Ok(())
     }
 

@@ -12,7 +12,21 @@
 mod app;
 mod bridge;
 mod calls;
+mod canvas;
+mod icons;
+mod platform;
+mod sounds;
+mod state;
 mod theme;
+mod ui;
+mod update;
+mod v_call;
+mod v_chat;
+mod v_group;
+mod v_main;
+mod v_modal;
+mod v_onboard;
+mod v_settings;
 
 use app::{App, Msg};
 use iced::{Size, Task};
@@ -36,7 +50,7 @@ fn main() -> iced::Result {
     iced::application(
         move || {
             let (app, task) = App::new(db.clone(), relays.clone());
-            let ponte = Task::run(bridge_stream(), |ev| Msg::FromEngine(Box::new(ev)));
+            let ponte = Task::run(bridge_stream(), |ev| Msg::Engine(Box::new(ev)));
             (app, Task::batch([task, ponte]))
         },
         App::update,

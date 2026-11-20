@@ -4,7 +4,6 @@
 
 use jm_core::engine::Engine;
 use jm_media::player::Player;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Um som da lista.
@@ -23,6 +22,9 @@ pub struct SoundBank {
     cache: Mutex<Vec<(String, Arc<Vec<f32>>)>>,
     /// Sons próprios de outras pessoas, recebidos numa chamada (até 30).
     remote: Mutex<Vec<(String, Vec<u8>)>>,
+    /// Sons próprios (só os dados, sem o áudio) e os de fábrica escondidos.
+    /// A tela pede a lista a cada desenho; ler o banco toda vez pesaria.
+    lista: Mutex<Option<(Vec<SoundInfo>, Vec<String>)>>,
 }
 
 const CACHE: usize = 60;
@@ -32,34 +34,48 @@ impl SoundBank {
         if let Some(p) = &player {
             p.set_volume(engine.sound_volume());
         }
-        Arc::new(Self { engine, player, cache: Mutex::new(Vec::new()), remote: Mutex::new(Vec::new()) })
+        Arc::new(Self { engine, player, cache: Mutex::new(Vec::new()), remote: Mutex::new(Vec::new()), lista: Mutex::new(None) })
     }
 
     pub fn player(&self) -> Option<&Player> {
         self.player.as_ref()
     }
 
+    /// Sons próprios e escondidos, lidos do banco só quando mudaram.
+    fn stored(&self) -> (Vec<SoundInfo>, Vec<String>) {
+        let mut g = self.lista.lock().unwrap();
+        if g.is_none() {
+            let proprios = self
+                .engine
+                .custom_sounds()
+                .into_iter()
+                .map(|s| SoundInfo { id: s.id, emoji: s.emoji, name: s.name, dur: s.dur as f32, builtin: false })
+                .collect();
+            *g = Some((proprios, self.engine.hidden_builtins()));
+        }
+        g.clone().unwrap_or_default()
+    }
+
+    /// Avisa que a lista mudou (som criado, editado, excluído ou restaurado).
+    pub fn changed(&self) {
+        *self.lista.lock().unwrap() = None;
+    }
+
     /// A lista na ordem do celular: fábrica (menos os escondidos), depois os seus.
     pub fn library(&self) -> Vec<SoundInfo> {
-        let escondidos = self.engine.hidden_builtins();
+        let (proprios, escondidos) = self.stored();
         let mut v: Vec<SoundInfo> = jm_core::sounds::BUILTIN
             .iter()
             .filter(|s| !escondidos.iter().any(|h| h == s.id))
             .map(builtin_info)
             .collect();
-        v.extend(self.engine.custom_sounds().into_iter().map(|s| SoundInfo {
-            id: s.id,
-            emoji: s.emoji,
-            name: s.name,
-            dur: s.dur as f32,
-            builtin: false,
-        }));
+        v.extend(proprios);
         v
     }
 
     /// Sons de fábrica que a pessoa tirou da lista.
     pub fn hidden(&self) -> Vec<SoundInfo> {
-        let escondidos = self.engine.hidden_builtins();
+        let (_, escondidos) = self.stored();
         jm_core::sounds::BUILTIN.iter().filter(|s| escondidos.iter().any(|h| h == s.id)).map(builtin_info).collect()
     }
 
@@ -67,13 +83,7 @@ impl SoundBank {
         if let Some(b) = jm_core::sounds::builtin(id) {
             return Some(builtin_info(b));
         }
-        self.engine.custom_sounds().into_iter().find(|s| s.id == id).map(|s| SoundInfo {
-            id: s.id,
-            emoji: s.emoji,
-            name: s.name,
-            dur: s.dur as f32,
-            builtin: false,
-        })
+        self.stored().0.into_iter().find(|s| s.id == id)
     }
 
     /// Bytes de um som: de fábrica, seu ou recebido numa chamada.
@@ -169,8 +179,6 @@ pub fn emoji_ok(e: &str) -> bool {
     (1..=8).contains(&n) && e.chars().all(|c| !c.is_alphanumeric() && !c.is_ascii() || c == '\u{200d}' || c == '\u{fe0f}')
 }
 
-/// Placa de som para quem chama: id → (nome, emoji, duração).
-pub type Meta = HashMap<String, (String, String, f32)>;
 
 #[cfg(test)]
 mod tests {

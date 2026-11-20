@@ -68,6 +68,36 @@ j-menseger-desktop/
 permite testá-lo com clientes reais em linha de comando, exatamente como o motor
 em JavaScript é testado hoje contra um relay local.
 
+### Dentro da interface (`jm-app`)
+
+```
+app.rs        telas de entrada, mensagens da interface (Msg), escuta da janela
+state.rs      estado da tela principal e consultas (nomes, fotos, contagens)
+update.rs     o que cada ação faz (chama o motor, abre janelas, PIN, mídia)
+v_*.rs        desenho: barra, conversa, grupos, chamadas, ajustes, janelas
+ui.rs         peças reaproveitadas (avatar, linhas de ajuste, forma de onda)
+canvas.rs     desenhos interativos: corte de som e recorte de foto
+calls.rs      chamadas 1:1 e salas de voz no protocolo do celular
+sounds.rs     biblioteca de sons (fábrica, próprios, recebidos na chamada)
+platform.rs   o que depende do sistema: arquivos, links, notificações,
+              esconder a janela das capturas (Windows)
+theme.rs      paleta dinâmica (cor de destaque e fundo escolhidos)
+icons.rs      ícones em traço desenhados à mão, no estilo dos do celular
+```
+
+Três detalhes que não são óbvios:
+
+- **Posição do menu de contexto.** O Iced não informa onde o clique direito
+  aconteceu. A posição do ponteiro é guardada a partir da escuta de eventos da
+  janela, sem passar pela fila de mensagens (mexer o mouse não redesenha a
+  janela). Como essa escuta pode chegar um instante depois do clique, o menu
+  espera um quadro antes de ler a posição.
+- **Lista de mensagens ancorada embaixo.** Mensagens novas não empurram a
+  leitura. Com a âncora embaixo, o deslocamento conta a partir do fim — "ir
+  para a mais nova" é deslocamento zero.
+- **Fotos e avatares** viram imagem uma vez só e ficam guardados; desenhar
+  decodificando a cada quadro travaria a janela.
+
 ## 5. Concorrência
 
 - Uma thread de interface, que nunca faz trabalho pesado.
