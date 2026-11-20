@@ -31,7 +31,10 @@ com o que foi executado para conferir cada um, está em
 | Código de convite curto, banner e jogos favoritos no perfil | **Pronto** (o celular ainda não entende) | Testes entre duas contas e conferido na interface |
 | Ajustes de voz e áudio (microfone, saída, volumes, teste) | **Pronto** | Escolher o microfone pelo nome funcionou onde o padrão falhava; sem som real aqui |
 | Chamada em tela cheia no estilo Discord | **Pronto** | Chamada 1:1, transmissão e sala de voz; tela cheia real depende de um gerenciador de janelas |
-| GIFs (Tenor/GIPHY com a sua chave, do computador, animados) | **Pronto** (o celular ainda não mostra) | GIF enviado e animado nos dois lados; busca real não testada por falta de chave |
+| GIFs (Tenor/GIPHY com a chave do app, do computador, animados) | **Pronto; a busca espera a chave do app** (o celular ainda não mostra) | GIF enviado e animado nos dois lados; a busca só liga quando o app tiver chave |
+| Música do Spotify no perfil ("Ouvindo Spotify") | **Pronto** (o celular ainda não mostra) | Spotify de teste no D-Bus: a música apareceu no perfil, no cabeçalho e sumiu ao parar. No Windows lê o título da janela do Spotify — **não testado num Windows** |
+| Animações (janelas, menus, barra da esquerda, "digitando", chamada chegando) | **Pronto** | Conferidas quadro a quadro em vídeo gravado da tela; dá para desligar em Aparência |
+| Instalador e desinstalador animados | **Pronto no Linux; no Windows só compilado** | Instalar, atualizar e desinstalar testados no Linux (tela e arquivos). Registro, atalhos .lnk e Área de Trabalho do Windows não puderam ser executados aqui |
 | Executável e instalador do Windows | **Gerados, não executados** | Compilação cruzada daqui; instalar e rodar só se testa num Windows |
 | Mandar a câmera do computador | **Não implementado** | O computador recebe a câmera do celular, mas não manda a própria |
 | Ler QR pela câmera | **Não implementado** | O computador mostra o próprio QR; para adicionar, cola-se o código |
@@ -90,9 +93,29 @@ J_MENSEGER_DATA=/tmp/beto/jm.db J_MENSEGER_RELAYS=ws://127.0.0.1:7781 cargo run 
 
 ## Gerar o programa para Windows
 
-**Pronto para baixar:** o programa já compilado fica em
-[`packaging/windows/dist/J-Menseger-0.3.0-portatil.exe`](packaging/windows/dist/J-Menseger-0.3.0-portatil.exe).
-É um arquivo só: baixe e abra, sem instalar.
+**Pronto para baixar:**
+[`packaging/windows/dist/J-Menseger-0.4.0-instalador.exe`](packaging/windows/dist/J-Menseger-0.4.0-instalador.exe).
+
+É um arquivo só, e é o próprio programa. Com "instalador" no nome, ele abre
+o **instalador animado** (no estilo do Discord): janela sem bordas com luzes
+passeando ao fundo, a logo flutuando, barra de progresso com brilho e um
+"certo" que se desenha no final, e então abre o J-Menseger. Ele:
+
+- instala **só para você, sem pedir administrador**, em
+  `%LOCALAPPDATA%\Programs\J-Menseger\J-Menseger.exe`;
+- cria o atalho no Menu Iniciar e, se marcado, na Área de Trabalho (a de
+  verdade, mesmo quando ela está no OneDrive);
+- aparece em "Aplicativos instalados", com desinstalador também animado
+  (que pergunta se é para apagar a conta e as conversas, desmarcado por
+  padrão);
+- instalado de novo por cima, **atualiza** sem perder nada (dá para fazer
+  com o J-Menseger aberto: o antigo continua até ser fechado);
+- tem o botão "Só abrir, sem instalar" (o modo portátil de antes).
+
+Renomeado sem "instalador" no nome (ou com `--portatil`), abre direto o
+aplicativo. Quem instalou a versão 0.3 pelo instalador antigo (em Arquivos
+de Programas) pode desinstalá-la pelo Windows: as conversas não são
+apagadas e aparecem na versão nova.
 
 O aplicativo é Rust com duas dependências em C: **libvpx** (vídeo) e **libopus**
 (voz). Tudo o mais usa bibliotecas que já vêm no Windows, então o executável
@@ -101,7 +124,7 @@ final **não acompanha nenhuma DLL**.
 ### A partir do Linux (é como os arquivos entregues foram gerados)
 
 ```bash
-sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nasm nsis
+sudo apt install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 nasm
 rustup target add x86_64-pc-windows-gnu
 
 # Compila libvpx e libopus na versão para Windows (uma vez só).
@@ -111,16 +134,13 @@ export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_LIBDIR="$PWD/target/win-c/lib/pkgconfig"
 cargo build --release -p jm-app --target x86_64-pc-windows-gnu
 
-# Instalador
-makensis packaging/windows/j-menseger.nsi
+# O instalador é o mesmo programa, com "instalador" no nome.
+cp target/x86_64-pc-windows-gnu/release/j-menseger.exe J-Menseger-0.4.0-instalador.exe
 ```
 
-Saem dois arquivos:
-
-| Arquivo | O que é |
-|---|---|
-| `target/x86_64-pc-windows-gnu/release/j-menseger.exe` | O programa, sozinho. Roda sem instalar |
-| `target/J-Menseger-0.3.0-instalador.exe` | Instalador, com atalho, ícone e desinstalador |
+A busca de GIFs usa chaves do próprio aplicativo, embutidas ao compilar:
+`JM_TENOR_KEY=… JM_GIPHY_KEY=… cargo build …` (ou escritas em
+`crates/jm-app/src/gifs.rs`). Sem chave, a busca fica desligada.
 
 **O que foi conferido aqui:** o `.exe` é um PE64 de interface gráfica (não abre
 console), tem o ícone e os dados do programa embutidos, e só depende de DLLs do
@@ -142,8 +162,8 @@ pelas mesmas bibliotecas usadas no Linux — não há código diferente na aplic
 
 ### Onde ficam os dados
 
-`%APPDATA%\J-Menseger\jmenseger.db`. O desinstalador **não apaga** essa pasta:
-sem as 12 palavras, uma conta apagada não volta. Na versão final do Windows não
+`%APPDATA%\J-Menseger\jmenseger.db`. O desinstalador só apaga essa pasta se
+você marcar a opção: sem as 12 palavras, uma conta apagada não volta. Na versão final do Windows não
 há console, então os registros vão para `jmenseger.log`, ao lado do banco.
 
 ## Instalar no Linux

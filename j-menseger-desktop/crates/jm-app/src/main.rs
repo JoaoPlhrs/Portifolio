@@ -13,11 +13,13 @@ mod app;
 mod bridge;
 mod calls;
 mod canvas;
+mod canvas_setup;
 mod gifs;
 mod icons;
 mod motion;
 mod nowplaying;
 mod platform;
+mod setup;
 mod sounds;
 mod state;
 mod theme;
@@ -36,6 +38,10 @@ use iced::{Size, Task};
 
 fn main() -> iced::Result {
     let db = db_path();
+    // Chamado como instalador (…instalador.exe, --instalar) ou desinstalador.
+    if let Some(modo) = setup::mode() {
+        return setup::run(modo, db.parent().map(|p| p.to_path_buf()).unwrap_or_default());
+    }
     if let Some(dir) = db.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

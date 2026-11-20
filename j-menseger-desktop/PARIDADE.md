@@ -124,9 +124,12 @@ entender cada uma. Enquanto isso, o que o celular faz com elas está na
 | Código de convite curto (`XXXX-XXXX`, vale 7 dias) | Beto adicionou a Ana só pelo código curto (teste `codigo_curto_encontra_a_pessoa`) | Não aceita o código curto; o código longo e o QR continuam valendo |
 | Banner do perfil (recortado em 3:1) | Banner da Ana apareceu no perfil dela visto pelo Beto | Ignora o banner (`pban`) |
 | Jogos favoritos no perfil (até 6) | Jogos da Ana apareceram no perfil dela visto pelo Beto | Ignora a lista (`g`) |
-| GIFs: busca no Tenor ou no GIPHY com a chave da própria pessoa, GIF do computador, GIF animado na conversa | GIF mandado do arquivo chegou ao Beto e anima nos dois lados; grade da busca conferida com GIFs locais; chave falsa recusada pelo Tenor com aviso claro. **A busca com uma chave de verdade não foi feita** (não havia chave) | Recusa a mídia `image/gif` (não aparece) |
+| GIFs: busca no Tenor ou no GIPHY com a chave do próprio app, GIF do computador, GIF animado na conversa | GIF mandado do arquivo chegou ao Beto e anima nos dois lados; grade da busca conferida com GIFs locais; chave falsa recusada pelo Tenor com aviso claro. **A busca está desligada até o app ter chave** | Recusa a mídia `image/gif` (não aparece) |
 | Voz e áudio: escolher microfone e saída, volume do microfone e das chamadas, testar o microfone | Tela conferida; escolher o dispositivo pelo nome fez o microfone funcionar numa chamada onde o padrão do sistema falhava; o teste mostra o erro do sistema quando falha | — (no celular quem escolhe é o sistema) |
 | Chamada em tela cheia no estilo Discord (F11, Esc para sair) | Chamada 1:1 com e sem transmissão de tela, e sala de voz com duas pessoas | — |
+| "Ouvindo Spotify" no perfil, no cabeçalho e na lista de membros | Com um Spotify de teste no D-Bus (Linux): chegou ao contato, com barra de tempo e link, e sumiu ao parar. Aviso `lis` só para contatos aceitos, nunca guardado nos servidores. No Windows lê o título da janela do Spotify — não executado aqui | Ignora o aviso `lis` |
+| Animações da interface | Gravadas em vídeo e conferidas quadro a quadro | — |
+| Instalador e desinstalador animados | Testados no Linux; no Windows só compilados | — |
 
 ## O que ainda não foi executado de verdade
 
@@ -137,4 +140,6 @@ entender cada uma. Enquanto isso, o que o celular faz com elas está na
 - Notificações do sistema e o bloqueio de capturas, que dependem do Windows.
 - A **tela cheia de verdade** da chamada: no ambiente de teste não há
   gerenciador de janelas, então o palco foi conferido dentro da janela.
-- A **busca de GIFs com uma chave real** do Tenor ou do GIPHY.
+- A **busca de GIFs**: espera as chaves do próprio app.
+- O **instalador no Windows** (registro, atalhos, Área de Trabalho) e a
+  leitura do Spotify pelo título da janela: compilados, não executados.

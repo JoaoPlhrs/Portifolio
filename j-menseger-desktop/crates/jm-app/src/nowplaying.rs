@@ -37,6 +37,7 @@ pub fn parse_window_title(t: &str) -> Option<Track> {
 
 /// Identificador da faixa a partir do `mpris:trackid` do Spotify
 /// (`/com/spotify/track/ID` ou `spotify:track:ID`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn track_id(trackid: &str) -> Option<String> {
     let id = trackid.rsplit(['/', ':']).next()?;
     (id.len() == 22 && id.chars().all(|c| c.is_ascii_alphanumeric()) && trackid.contains("track")).then(|| id.to_string())
