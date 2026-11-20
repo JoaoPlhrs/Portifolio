@@ -67,12 +67,173 @@ pub fn output_devices() -> Vec<Device> {
         .unwrap_or_default()
 }
 
+/// Preferências de áudio escolhidas nos ajustes: valem para chamadas, salas,
+/// gravações e sons. `None` é o dispositivo padrão do sistema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioPrefs {
+    pub input: Option<String>,
+    pub output: Option<String>,
+    /// Volume do microfone: 1.0 é o original, até 3.0.
+    pub input_gain: f32,
+    /// Volume de quem fala na chamada: 1.0 é o original, até 2.0.
+    pub output_volume: f32,
+}
+
+impl Default for AudioPrefs {
+    fn default() -> Self {
+        Self { input: None, output: None, input_gain: 1.0, output_volume: 1.0 }
+    }
+}
+
+static PREFS: std::sync::RwLock<Option<AudioPrefs>> = std::sync::RwLock::new(None);
+
+/// Troca as preferências. Vale para o próximo microfone ou saída aberto.
+pub fn set_prefs(p: AudioPrefs) {
+    *PREFS.write().unwrap() = Some(p);
+}
+
+pub fn prefs() -> AudioPrefs {
+    PREFS.read().unwrap().clone().unwrap_or_default()
+}
+
+/// Abre um fluxo de entrada no formato que o dispositivo usa (f32, i16, u16
+/// ou i32), entregando sempre f32. Muitos microfones USB só falam i16: pedir
+/// f32 a eles falhava e o microfone "não funcionava".
+pub(crate) fn build_input(
+    dev: &cpal::Device,
+    cfg: &cpal::SupportedStreamConfig,
+    mut f: impl FnMut(&[f32]) + Send + 'static,
+) -> Result<cpal::Stream> {
+    use cpal::SampleFormat as S;
+    let erro = |e: cpal::Error| AudioError::Stream(e.to_string());
+    let falha = |e| tracing::warn!("erro na captura de áudio: {e}");
+    let c = cfg.config();
+    let mut tmp: Vec<f32> = Vec::new();
+    match cfg.sample_format() {
+        S::F32 => dev.build_input_stream(c.clone(), move |d: &[f32], _: &_| f(d), falha, None).map_err(erro),
+        S::I16 => dev
+            .build_input_stream(
+                c.clone(),
+                move |d: &[i16], _: &_| {
+                    tmp.clear();
+                    tmp.extend(d.iter().map(|s| *s as f32 / 32768.0));
+                    f(&tmp)
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        S::U16 => dev
+            .build_input_stream(
+                c.clone(),
+                move |d: &[u16], _: &_| {
+                    tmp.clear();
+                    tmp.extend(d.iter().map(|s| (*s as f32 - 32768.0) / 32768.0));
+                    f(&tmp)
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        S::I32 => dev
+            .build_input_stream(
+                c.clone(),
+                move |d: &[i32], _: &_| {
+                    tmp.clear();
+                    tmp.extend(d.iter().map(|s| *s as f32 / 2_147_483_648.0));
+                    f(&tmp)
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        outro => Err(AudioError::Device(format!("formato de áudio não suportado: {outro:?}"))),
+    }
+}
+
+/// Mesma ideia para a saída: o app gera f32 e converte para o formato da placa.
+pub(crate) fn build_output(
+    dev: &cpal::Device,
+    cfg: &cpal::SupportedStreamConfig,
+    mut f: impl FnMut(&mut [f32]) + Send + 'static,
+) -> Result<cpal::Stream> {
+    use cpal::SampleFormat as S;
+    let erro = |e: cpal::Error| AudioError::Stream(e.to_string());
+    let falha = |e| tracing::warn!("erro na reprodução de áudio: {e}");
+    let c = cfg.config();
+    let mut tmp: Vec<f32> = Vec::new();
+    match cfg.sample_format() {
+        S::F32 => dev.build_output_stream(c.clone(), move |d: &mut [f32], _: &_| f(d), falha, None).map_err(erro),
+        S::I16 => dev
+            .build_output_stream(
+                c.clone(),
+                move |d: &mut [i16], _: &_| {
+                    tmp.resize(d.len(), 0.0);
+                    f(&mut tmp);
+                    for (o, s) in d.iter_mut().zip(&tmp) {
+                        *o = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                    }
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        S::U16 => dev
+            .build_output_stream(
+                c.clone(),
+                move |d: &mut [u16], _: &_| {
+                    tmp.resize(d.len(), 0.0);
+                    f(&mut tmp);
+                    for (o, s) in d.iter_mut().zip(&tmp) {
+                        *o = (s.clamp(-1.0, 1.0) * 32767.0 + 32768.0) as u16;
+                    }
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        S::I32 => dev
+            .build_output_stream(
+                c.clone(),
+                move |d: &mut [i32], _: &_| {
+                    tmp.resize(d.len(), 0.0);
+                    f(&mut tmp);
+                    for (o, s) in d.iter_mut().zip(&tmp) {
+                        *o = (s.clamp(-1.0, 1.0) as f64 * 2_147_483_647.0) as i32;
+                    }
+                },
+                falha,
+                None,
+            )
+            .map_err(erro),
+        outro => Err(AudioError::Device(format!("formato de áudio não suportado: {outro:?}"))),
+    }
+}
+
 /// Nome legível de um dispositivo de áudio.
 fn nome_de(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|x| x.name().to_string())
 }
 
-fn find_input(nome: Option<&str>) -> Result<cpal::Device> {
+/// Acha o microfone: o pedido, senão o escolhido nos ajustes, senão o
+/// padrão. Um escolhido que sumiu (fone desconectado) cai no padrão.
+pub(crate) fn find_input(nome: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    let escolhido = prefs().input;
+    let nome = nome.or(escolhido.as_deref());
+    if nome.is_some() {
+        if let Ok(d) = find_input_exact(nome) {
+            return Ok(d);
+        }
+        if escolhido.as_deref() == nome {
+            tracing::warn!("microfone escolhido não encontrado; usando o padrão");
+            return host.default_input_device().ok_or(AudioError::NoDevice("microfone"));
+        }
+    }
+    find_input_exact(nome)
+}
+
+fn find_input_exact(nome: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     match nome {
         Some(n) => host
@@ -84,7 +245,23 @@ fn find_input(nome: Option<&str>) -> Result<cpal::Device> {
     }
 }
 
-fn find_output(nome: Option<&str>) -> Result<cpal::Device> {
+pub(crate) fn find_output(nome: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    let escolhido = prefs().output;
+    let nome = nome.or(escolhido.as_deref());
+    if nome.is_some() {
+        if let Ok(d) = find_output_exact(nome) {
+            return Ok(d);
+        }
+        if escolhido.as_deref() == nome {
+            tracing::warn!("saída de som escolhida não encontrada; usando a padrão");
+            return host.default_output_device().ok_or(AudioError::NoDevice("alto-falante"));
+        }
+    }
+    find_output_exact(nome)
+}
+
+fn find_output_exact(nome: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     match nome {
         Some(n) => host
@@ -187,12 +364,13 @@ impl Capture {
         let m = Arc::clone(&muted);
         let lv = Arc::clone(&level);
         let sb = Arc::clone(&sobra);
+        let ganho = prefs().input_gain.clamp(0.0, 3.0);
 
-        let stream = dispositivo
-            .build_input_stream(
-                config.config(),
-                move |dados: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mono = resample(dados, taxa, SAMPLE_RATE, canais);
+        let stream = build_input(&dispositivo, &config, move |dados: &[f32]| {
+                    let mut mono = resample(dados, taxa, SAMPLE_RATE, canais);
+                    if (ganho - 1.0).abs() > 0.01 {
+                        mono.iter_mut().for_each(|s| *s = (*s * ganho).clamp(-1.0, 1.0));
+                    }
                     let mut pcm = f32_to_i16(&mono);
                     if m.load(Ordering::Relaxed) {
                         // Mudo: manda silêncio em vez de parar o fluxo, para a
@@ -211,11 +389,7 @@ impl Capture {
                             return;
                         }
                     }
-                },
-                |e| tracing::warn!("erro na captura de áudio: {e}"),
-                None,
-            )
-            .map_err(|e| AudioError::Stream(e.to_string()))?;
+                })?;
 
         stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
         Ok((Self { _stream: stream, muted, level }, rx))
@@ -253,14 +427,11 @@ impl Playback {
         let canais = config.channels() as usize;
 
         let fila: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
-        let volume = Arc::new(AtomicU32::new(1000));
+        let volume = Arc::new(AtomicU32::new((prefs().output_volume.clamp(0.0, 2.0) * 1000.0) as u32));
         let f = Arc::clone(&fila);
         let v = Arc::clone(&volume);
 
-        let stream = dispositivo
-            .build_output_stream(
-                config.config(),
-                move |saida: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let stream = build_output(&dispositivo, &config, move |saida: &mut [f32]| {
                     let quadros = saida.len() / canais.max(1);
                     let ganho = v.load(Ordering::Relaxed) as f32 / 1000.0;
                     let mut buf = f.lock().unwrap();
@@ -282,11 +453,7 @@ impl Playback {
                             *canal = amostra;
                         }
                     }
-                },
-                |e| tracing::warn!("erro na reprodução de áudio: {e}"),
-                None,
-            )
-            .map_err(|e| AudioError::Stream(e.to_string()))?;
+                })?;
 
         stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
         Ok(Self { _stream: stream, fila, volume })
@@ -300,7 +467,7 @@ impl Playback {
     /// Volume de 0 a 1.
     pub fn set_volume(&self, v: f32) {
         self.volume
-            .store((v.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+            .store((v.clamp(0.0, 2.0) * 1000.0) as u32, Ordering::Relaxed);
     }
 
     pub fn volume(&self) -> f32 {

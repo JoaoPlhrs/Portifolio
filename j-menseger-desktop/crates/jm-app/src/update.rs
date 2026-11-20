@@ -98,6 +98,55 @@ impl Main {
         }
     }
 
+    fn save_audio(&mut self) {
+        self.audio.apply();
+        if let Err(e) = self.engine.set_ui_pref("audio", &self.audio) {
+            tracing::warn!("ajustes de áudio não salvos: {e}");
+        }
+    }
+
+    fn refresh_devices(&mut self) {
+        let mut i: Vec<String> = vec![PADRAO.to_string()];
+        i.extend(jm_media::audio::input_devices().into_iter().map(|d| d.name));
+        let mut o: Vec<String> = vec![PADRAO.to_string()];
+        o.extend(jm_media::audio::output_devices().into_iter().map(|d| d.name));
+        self.audio_inputs = i;
+        self.audio_outputs = o;
+    }
+
+    fn start_mic_test(&mut self, eco: bool) {
+        self.mic_test = None;
+        if self.call.is_some() || self.room.is_some() {
+            self.mic_error = Some("O microfone está na chamada agora. Teste depois de desligar.".into());
+            return;
+        }
+        match jm_media::audio::Capture::start(None) {
+            Ok((cap, rx)) => {
+                self.mic_error = None;
+                let eco = if eco {
+                    match jm_media::audio::Playback::start(None) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            self.mic_error = Some(format!("Não deu para tocar o retorno: {e}"));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                self.mic_test = Some(MicTest { cap, rx, levels: Vec::new(), eco });
+            }
+            Err(e) => self.mic_error = Some(e.to_string()),
+        }
+    }
+
+    fn restart_mic_test(&mut self) {
+        if let Some(t) = &self.mic_test {
+            let eco = t.eco.is_some();
+            self.start_mic_test(eco);
+        }
+    }
+
     fn lock_now(&mut self) {
         if self.pin.is_some() && self.lock.is_none() {
             self.lock = Some(LockState { msg: "Digite seu PIN".into(), ..Default::default() });
@@ -231,6 +280,11 @@ impl Main {
                 Task::none()
             }
             Msg::Page(p) => {
+                if p == SettingsPage::Audio {
+                    self.refresh_devices();
+                } else {
+                    self.mic_test = None;
+                }
                 self.page = p;
                 self.section = Section::Settings;
                 self.close_overlays();
@@ -1178,6 +1232,56 @@ impl Main {
                 })
             }
             Msg::ProfPhoto => Task::perform(platform::pick_for_crop(CropTarget::Me), Msg::PhotoForCrop),
+            Msg::AudioRefresh => {
+                self.refresh_devices();
+                Task::none()
+            }
+            Msg::AudioInput(v) => {
+                self.audio.input = (v != PADRAO).then_some(v);
+                self.save_audio();
+                self.restart_mic_test();
+                Task::none()
+            }
+            Msg::AudioOutput(v) => {
+                self.audio.output = (v != PADRAO).then_some(v);
+                self.save_audio();
+                if let Err(e) = self.sounds.reopen_player() {
+                    self.toast(format!("Não deu para abrir essa saída: {e}"));
+                }
+                self.restart_mic_test();
+                Task::none()
+            }
+            Msg::AudioGain(v) => {
+                self.audio.input_gain = v.clamp(0.0, 3.0);
+                self.save_audio();
+                Task::none()
+            }
+            Msg::AudioVolume(v) => {
+                self.audio.output_volume = v.clamp(0.0, 2.0);
+                self.save_audio();
+                if let Some(t) = &self.mic_test {
+                    if let Some(e) = &t.eco {
+                        e.set_volume(self.audio.output_volume);
+                    }
+                }
+                Task::none()
+            }
+            Msg::MicTestToggle => {
+                if self.mic_test.take().is_none() {
+                    self.start_mic_test(false);
+                }
+                Task::none()
+            }
+            Msg::MicEcho(on) => {
+                self.start_mic_test(on);
+                Task::none()
+            }
+            Msg::SpeakerTest => {
+                if self.sounds.play("tcharam") == 0.0 {
+                    self.toast("Nenhuma saída de som funcionando. Confira a saída escolhida.");
+                }
+                Task::none()
+            }
             Msg::BannerPick => Task::perform(platform::pick_for_crop(CropTarget::Banner), Msg::PhotoForCrop),
             Msg::BannerRemove => {
                 let e = self.eng();
@@ -2222,6 +2326,17 @@ impl Main {
                 tarefas.push(Task::done(Msg::SbRecStop));
             }
         }
+        if let Some(t) = &mut self.mic_test {
+            while let Ok(q) = t.rx.try_recv() {
+                if let Some(e) = &t.eco {
+                    e.push(&q);
+                }
+            }
+            t.levels.push(t.cap.level());
+            if t.levels.len() > 120 {
+                t.levels.remove(0);
+            }
+        }
         if self.call.is_some() {
             tarefas.push(self.poll_call());
         }
@@ -2409,6 +2524,9 @@ impl Main {
 fn open_menu(kind: CtxKind) -> Task<Msg> {
     Task::perform(tokio::time::sleep(Duration::from_millis(30)), move |_| Msg::MenuNow(kind.clone()))
 }
+
+/// Nome mostrado para "usar o dispositivo padrão do sistema".
+pub const PADRAO: &str = "Padrão do sistema";
 
 /// Leva a lista de mensagens para a mais nova. A lista é ancorada embaixo,
 /// então o deslocamento conta a partir do fim: zero é a última mensagem.

@@ -8,7 +8,7 @@
 //! que é compartilhado; assim nada aqui depende de o fluxo do sistema poder
 //! atravessar threads.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 
 const SR: f64 = 48_000.0;
@@ -116,16 +116,13 @@ impl Player {
             .name("saida-de-som".into())
             .spawn(move || {
                 let abrir = || -> Result<cpal::Stream, PlayerError> {
-                    let host = cpal::default_host();
-                    let dev = host.default_output_device().ok_or(PlayerError::NoDevice)?;
+                    // A saída escolhida nos ajustes (ou a padrão).
+                    let dev = crate::audio::find_output(None).map_err(|_| PlayerError::NoDevice)?;
                     let cfg = dev.default_output_config().map_err(|e| PlayerError::Stream(e.to_string()))?;
                     let taxa = cfg.sample_rate();
                     let canais = cfg.channels() as usize;
                     let mut mono = Vec::new();
-                    let stream = dev
-                        .build_output_stream(
-                            cfg.config(),
-                            move |saida: &mut [f32], _| {
+                    let stream = crate::audio::build_output(&dev, &cfg, move |saida: &mut [f32]| {
                                 let n = saida.len() / canais.max(1);
                                 mono.resize(n, 0.0);
                                 if let Ok(mut mx) = m.lock() {
@@ -136,10 +133,7 @@ impl Player {
                                 for (i, q) in saida.chunks_mut(canais.max(1)).enumerate() {
                                     q.fill(mono[i]);
                                 }
-                            },
-                            |e| tracing::warn!("erro na saída de som: {e}"),
-                            None,
-                        )
+                            })
                         .map_err(|e| PlayerError::Stream(e.to_string()))?;
                     stream.play().map_err(|e| PlayerError::Stream(e.to_string()))?;
                     Ok(stream)

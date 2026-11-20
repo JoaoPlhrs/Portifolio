@@ -33,6 +33,7 @@ pub fn sidebar(m: &Main) -> El<'_> {
         item(SettingsPage::Appearance, Icon::Drop, "Aparência", false),
         item(SettingsPage::Soundboard, Icon::Wave, "Soundboard", false),
         item(SettingsPage::Network, Icon::Server, "Rede e servidores", false),
+        item(SettingsPage::Audio, Icon::Mic, "Voz e áudio", false),
         item(SettingsPage::Storage, Icon::Db, "Armazenamento", false),
         rotulo("Sobre"),
         item(SettingsPage::About, Icon::Sparkle, "Sobre o J-Menseger", false),
@@ -82,6 +83,7 @@ pub fn page(m: &Main) -> El<'_> {
         SettingsPage::Network => network(m),
         SettingsPage::Storage => storage(m),
         SettingsPage::About => about(m),
+        SettingsPage::Audio => audio(m),
     }
 }
 
@@ -714,6 +716,86 @@ fn network(m: &Main) -> El<'_> {
             .into(),
             ui::vspace(4.0),
             row![ui::primary(Some(Icon::Check), "Salvar TURN", Some(Msg::TurnSave))].into(),
+        ],
+    )
+}
+
+/* ------------------------------------------------------------ voz e áudio */
+
+fn audio(m: &Main) -> El<'_> {
+    use crate::update::PADRAO;
+    let a = &m.audio;
+    let entrada = a.input.clone().unwrap_or_else(|| PADRAO.to_string());
+    let saida = a.output.clone().unwrap_or_else(|| PADRAO.to_string());
+    let lista = |v: &Vec<String>, sel: String, f: fn(String) -> Msg| -> El<'_> {
+        iced::widget::pick_list(v.clone(), Some(sel), f).width(Length::Fill).padding([9, 12]).text_size(14).into()
+    };
+    let testando = m.mic_test.is_some();
+    let eco = m.mic_test.as_ref().is_some_and(|t| t.eco.is_some());
+    let mut teste = column![
+        row![
+            ui::secondary(Some(if testando { Icon::Stop } else { Icon::Mic }), if testando { "Parar teste" } else { "Testar microfone" }, Some(Msg::MicTestToggle)),
+            row![text("Ouvir minha voz (use fone)").size(13).color(t::FG_DIM), iced::widget::toggler(eco).on_toggle(Msg::MicEcho).size(18)].spacing(8).align_y(Alignment::Center),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(10);
+    if let Some(tt) = &m.mic_test {
+        let pico = tt.levels.iter().rev().take(8).copied().fold(0.0f32, f32::max);
+        teste = teste.push(container(ui::level_bars(&tt.levels, 80, t::accent())).padding([4, 0]));
+        teste = teste.push(ui::note(if pico > 0.02 {
+            "O microfone está captando. Fale normalmente: as barras devem subir."
+        } else {
+            "Nada chegando ainda. Fale perto do microfone; se continuar parado, veja as dicas abaixo."
+        }));
+    }
+    if let Some(e) = &m.mic_error {
+        teste = teste.push(row![icon(Icon::Alert, 15.0, t::DANGER), text(e.clone()).size(13).color(t::DANGER)].spacing(6).align_y(Alignment::Center));
+    }
+    let n_mic = m.audio_inputs.len().saturating_sub(1);
+    frame(
+        "Voz e áudio",
+        Some("Valem para chamadas, salas de voz, mensagens de voz e sons."),
+        vec![
+            ui::label("Microfone"),
+            lista(&m.audio_inputs, entrada, Msg::AudioInput),
+            ui::note(format!("{n_mic} microfone(s) encontrado(s) neste computador.")),
+            ui::vspace(6.0),
+            row![
+                text("Volume do microfone").size(13.5).color(t::FG_DIM).width(170),
+                slider(0.0..=3.0, a.input_gain, Msg::AudioGain).step(0.05_f32).width(Length::Fill),
+                text(format!("{:.0}%", a.input_gain * 100.0)).size(12.5).color(t::FG_DIM).width(48),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+            ui::vspace(6.0),
+            teste.into(),
+            ui::label("Saída de som"),
+            lista(&m.audio_outputs, saida, Msg::AudioOutput),
+            ui::vspace(6.0),
+            row![
+                text("Volume das chamadas").size(13.5).color(t::FG_DIM).width(170),
+                slider(0.0..=2.0, a.output_volume, Msg::AudioVolume).step(0.05_f32).width(Length::Fill),
+                text(format!("{:.0}%", a.output_volume * 100.0)).size(12.5).color(t::FG_DIM).width(48),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+            row![ui::secondary(Some(Icon::Volume), "Tocar som de teste", Some(Msg::SpeakerTest)), ui::ghost(Some(Icon::Refresh), "Atualizar lista", Some(Msg::AudioRefresh))]
+                .spacing(8)
+                .into(),
+            ui::note("Mudanças de microfone e volume valem a partir da próxima chamada ou sala."),
+            ui::label("Microfone não funciona?"),
+            column![
+                bullet("No Windows: Configurações → Privacidade e segurança → Microfone. Ligue \"Acesso ao microfone\" e \"Permitir que aplicativos da área de trabalho acessem o microfone\"."),
+                bullet("Escolha o microfone pelo nome aqui em cima em vez de \"Padrão do sistema\" (o padrão às vezes é a webcam ou um dispositivo desligado)."),
+                bullet("Se outro programa (Discord, OBS, jogo) estiver com o microfone em modo exclusivo, feche-o e teste de novo."),
+                bullet("Se as barras sobem mas o outro lado não ouve, aumente o volume do microfone."),
+            ]
+            .spacing(6)
+            .into(),
         ],
     )
 }

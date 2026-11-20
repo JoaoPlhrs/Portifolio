@@ -18,7 +18,7 @@ pub struct SoundInfo {
 
 pub struct SoundBank {
     engine: Arc<Engine>,
-    player: Option<Player>,
+    player: std::sync::RwLock<Option<Player>>,
     cache: Mutex<Vec<(String, Arc<Vec<f32>>)>>,
     /// Sons próprios de outras pessoas, recebidos numa chamada (até 30).
     remote: Mutex<Vec<(String, Vec<u8>)>>,
@@ -34,11 +34,21 @@ impl SoundBank {
         if let Some(p) = &player {
             p.set_volume(engine.sound_volume());
         }
-        Arc::new(Self { engine, player, cache: Mutex::new(Vec::new()), remote: Mutex::new(Vec::new()), lista: Mutex::new(None) })
+        Arc::new(Self { engine, player: std::sync::RwLock::new(player), cache: Mutex::new(Vec::new()), remote: Mutex::new(Vec::new()), lista: Mutex::new(None) })
     }
 
-    pub fn player(&self) -> Option<&Player> {
-        self.player.as_ref()
+    pub fn player(&self) -> Option<Player> {
+        self.player.read().unwrap().clone()
+    }
+
+    /// Reabre a saída de som (trocou o dispositivo nos ajustes).
+    pub fn reopen_player(&self) -> Result<(), String> {
+        let antigo = self.player.write().unwrap().take();
+        drop(antigo);
+        let novo = Player::new().map_err(|e| e.to_string())?;
+        novo.set_volume(self.engine.sound_volume());
+        *self.player.write().unwrap() = Some(novo);
+        Ok(())
     }
 
     /// Sons próprios e escondidos, lidos do banco só quando mudaram.
@@ -115,7 +125,7 @@ impl SoundBank {
     /// Toca um som pelo id. Devolve a duração (0 se não tocou).
     pub fn play(&self, id: &str) -> f32 {
         let id = jm_core::sounds::legacy(id).to_string();
-        let Some(player) = &self.player else { return 0.0 };
+        let Some(player) = self.player() else { return 0.0 };
         match self.pcm(&id, || self.bytes(&id)) {
             Some(p) => {
                 let d = p.len() as f32 / 48_000.0;
@@ -128,7 +138,7 @@ impl SoundBank {
 
     /// Toca bytes quaisquer (som próprio recebido numa conversa).
     pub fn play_bytes(&self, key: &str, bytes: &[u8]) -> f32 {
-        let Some(player) = &self.player else { return 0.0 };
+        let Some(player) = self.player() else { return 0.0 };
         match self.pcm(key, || Some(bytes.to_vec())) {
             Some(p) => {
                 let d = p.len() as f32 / 48_000.0;
@@ -153,7 +163,7 @@ impl SoundBank {
     }
 
     pub fn set_volume(&self, v: f32) {
-        if let Some(p) = &self.player {
+        if let Some(p) = self.player() {
             p.set_volume(v);
         }
         let _ = self.engine.set_sound_volume(v);

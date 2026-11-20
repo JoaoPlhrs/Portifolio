@@ -41,6 +41,50 @@ pub enum SettingsPage {
     Network,
     Storage,
     About,
+    Audio,
+}
+
+/// Ajustes de voz e áudio (gravados só neste computador).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioSettings {
+    #[serde(default)]
+    pub input: Option<String>,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default = "um")]
+    pub input_gain: f32,
+    #[serde(default = "um")]
+    pub output_volume: f32,
+}
+
+fn um() -> f32 {
+    1.0
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self { input: None, output: None, input_gain: 1.0, output_volume: 1.0 }
+    }
+}
+
+impl AudioSettings {
+    pub fn apply(&self) {
+        jm_media::audio::set_prefs(jm_media::audio::AudioPrefs {
+            input: self.input.clone(),
+            output: self.output.clone(),
+            input_gain: self.input_gain,
+            output_volume: self.output_volume,
+        });
+    }
+}
+
+/// Teste do microfone em andamento: nível ao vivo e, se pedido, a própria
+/// voz no fone para conferir.
+pub struct MicTest {
+    pub cap: jm_media::audio::Capture,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<Vec<i16>>,
+    pub levels: Vec<f32>,
+    pub eco: Option<jm_media::audio::Playback>,
 }
 
 /// Interruptores dos ajustes.
@@ -435,6 +479,11 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    pub audio: AudioSettings,
+    pub audio_inputs: Vec<String>,
+    pub audio_outputs: Vec<String>,
+    pub mic_test: Option<MicTest>,
+    pub mic_error: Option<String>,
     /// Código de convite curto e quando vence (segundos).
     pub short_code: Option<(String, i64)>,
     pub short_code_busy: bool,
@@ -444,6 +493,8 @@ pub struct Main {
 
 impl Main {
     pub fn new(engine: Arc<Engine>, chats: Vec<ChatSummary>) -> (Self, Task<Msg>) {
+        // As preferências de áudio valem antes de abrir a saída de som.
+        engine.ui_pref::<AudioSettings>("audio").unwrap_or_default().apply();
         let player = match jm_media::player::Player::new() {
             Ok(p) => Some(p),
             Err(e) => {
@@ -514,6 +565,11 @@ impl Main {
             chats_loading: false,
             chats_dirty: false,
             qr: None,
+            audio: AudioSettings::default(),
+            audio_inputs: Vec::new(),
+            audio_outputs: Vec::new(),
+            mic_test: None,
+            mic_error: None,
             short_code: None,
             short_code_busy: false,
             pics: RefCell::new(HashMap::new()),
@@ -523,6 +579,7 @@ impl Main {
         let mut m = m;
         m.refresh_qr();
         m.short_code = m.engine.short_code();
+        m.audio = m.engine.ui_pref("audio").unwrap_or_default();
         let e = Arc::clone(&m.engine);
         let task = Task::batch([
             iced::window::oldest().map(Msg::WindowId),
@@ -563,6 +620,7 @@ impl Main {
             || self.rec.is_some()
             || self.track.as_ref().is_some_and(|t| !t.3)
             || matches!(self.modal, Some(Modal::RecordSound { .. }) | Some(Modal::Trim(_)))
+            || self.mic_test.is_some()
         {
             Duration::from_millis(80)
         } else if self.toast.is_some() || self.lock.as_ref().is_some_and(|l| l.wait_until.is_some()) {
