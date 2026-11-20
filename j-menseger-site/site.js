@@ -80,3 +80,70 @@
     setTimeout(() => { escolhe("voces"); reTab(); }, 900);
   }
 })();
+
+// Animações de rolagem: títulos sobem palavra por palavra, blocos aparecem
+// em sequência e o celular da vitrine se move mais devagar que o PC.
+(() => {
+  const semMovimento = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (semMovimento || !("IntersectionObserver" in window)) return;
+
+  // Quebra os títulos em palavras (mantém <br> e o texto acessível igual).
+  document.querySelectorAll("h1, .secao-cabeca h2, .grupo h3, .dl h3").forEach((t) => {
+    let i = 0;
+    const quebra = (no) => {
+      [...no.childNodes].forEach((n) => {
+        if (n.nodeType === 3) {
+          const frag = document.createDocumentFragment();
+          n.textContent.split(/(\s+)/).forEach((p) => {
+            if (!p) return;
+            if (/^\s+$/.test(p)) { frag.append(p); return; }
+            const fora = document.createElement("span"); fora.className = "palavra";
+            const dentro = document.createElement("span"); dentro.textContent = p; dentro.style.setProperty("--i", i++);
+            fora.append(dentro); frag.append(fora);
+          });
+          n.replaceWith(frag);
+        } else if (n.nodeType === 1 && n.tagName !== "BR" && n.tagName !== "svg" && !n.classList.contains("i")) quebra(n);
+      });
+    };
+    quebra(t);
+    t.classList.add("titulo-anima");
+  });
+
+  // Blocos que sobem: o que vem depois de cada título, em sequência.
+  const grupos = [
+    [".hero .lead", ".hero .acoes", ".hero .plataformas", ".demo"],
+    [".telas .secao-cabeca p", ".vitrine .pc", ".vitrine .cel"],
+    [".grupo"],
+    [".privacidade .secao-cabeca p", ".quem-ve tbody tr", ".garantias li"],
+    [".baixar .secao-cabeca p", ".dl"],
+  ];
+  grupos.forEach((sels) => {
+    let d = 0;
+    sels.forEach((sel) => document.querySelectorAll(sel).forEach((el) => { el.classList.add("sobe"); el.style.setProperty("--d", d++); }));
+  });
+
+  const obs = new IntersectionObserver((itens) => {
+    itens.forEach((it) => {
+      if (!it.isIntersecting) return;
+      it.target.classList.add("visivel");
+      obs.unobserve(it.target);
+    });
+  }, { rootMargin: "0px 0px -8% 0px", threshold: 0.12 });
+  document.querySelectorAll(".titulo-anima, .sobe").forEach((el) => obs.observe(el));
+
+  // Profundidade: o celular anda mais devagar que a tela do PC.
+  const cel = document.querySelector(".vitrine .cel");
+  const vitrine = document.querySelector(".vitrine");
+  if (cel && vitrine && matchMedia("(min-width: 901px)").matches) {
+    let pedido = 0;
+    const atualiza = () => {
+      pedido = 0;
+      const r = vitrine.getBoundingClientRect();
+      const p = (window.innerHeight - r.top) / (window.innerHeight + r.height); // 0 → 1 enquanto passa
+      const y = (0.5 - Math.min(1, Math.max(0, p))) * 90;
+      cel.style.translate = `0 ${y.toFixed(1)}px`;
+    };
+    addEventListener("scroll", () => { pedido ||= requestAnimationFrame(atualiza); }, { passive: true });
+    atualiza();
+  }
+})();
