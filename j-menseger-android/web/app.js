@@ -9855,13 +9855,71 @@ zoo`.split(`
     Xs = 2e4,
     ci = 24e5,
     Ld =
-      /^(audio\/(webm|ogg|mp4|mpeg|aac)|image\/(webp|jpeg|png))(;[a-z0-9=,. -]*)?$/i,
+      /^(audio\/(webm|ogg|mp4|mpeg|aac)|image\/(webp|jpeg|png|gif))(;[a-z0-9=,. -]*)?$/i,
     Za = 86400,
     Qs = { pending: 0, failed: 0, sent: 1, delivered: 2, read: 3 },
     Re = /^[0-9a-f]{64}$/,
     Ah = /^[a-z0-9-]{1,24}$/,
     Sh = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/,
     Ch = 24e3;
+  /* ---- Novidades 0.5 (iguais ao computador): banner, jogos, ouvindo agora, código curto ---- */
+  var JM_BANNER_MAX = 24e3,
+    JM_MAX_GAMES = 6,
+    JM_SC_KIND = 30078,
+    JM_SC_DIAS = 7,
+    JM_SC_ALFABETO = "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    JM_LIS_HEARTBEAT = 4 * 6e4,
+    JM_LIS_TTL = 9 * 6e4;
+  function jmCleanBanner(t) {
+    return t === ""
+      ? ""
+      : typeof t == "string" && t.length <= JM_BANNER_MAX && Sh.test(t)
+        ? t
+        : void 0;
+  }
+  function jmCleanGames(t) {
+    let e = [];
+    if (!Array.isArray(t)) return e;
+    for (let a of t) {
+      let n = String(a ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 30);
+      if (n && !e.some((s) => s.toLowerCase() === n.toLowerCase())) e.push(n);
+      if (e.length >= JM_MAX_GAMES) break;
+    }
+    return e;
+  }
+  function jmCleanListening(t) {
+    if (!t || typeof t != "object") return null;
+    let e = (a, n) => String(a ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, n).trim(),
+      a = e(t.s, 120);
+    if (!a) return null;
+    let n = typeof t.id == "string" && /^[A-Za-z0-9]{22}$/.test(t.id) ? t.id : void 0,
+      s = Number.isInteger(t.d) && t.d > 0 && t.d <= 10800 ? t.d : void 0;
+    return { s: a, a: e(t.a, 120), al: e(t.al, 120), id: n, st: Math.max(0, Number(t.st) || 0), d: s };
+  }
+  function jmListeningAlive(t, e, a) {
+    return a - e > JM_LIS_TTL ? !1 : t.d && t.st > 0 ? a < t.st + t.d * 1e3 + 9e4 : !0;
+  }
+  function jmListeningUrl(t) {
+    return t.id
+      ? "https://open.spotify.com/track/" + t.id
+      : "https://open.spotify.com/search/" + encodeURIComponent(t.s + " " + t.a);
+  }
+  function jmShortGenerate() {
+    let t = crypto.getRandomValues(new Uint8Array(8)),
+      e = [...t].map((a) => JM_SC_ALFABETO[a & 31]).join("");
+    return e.slice(0, 4) + "-" + e.slice(4);
+  }
+  function jmShortParse(t) {
+    let e = "";
+    for (let a of String(t || "").trim().toUpperCase()) {
+      let n = a === "O" ? "0" : a === "I" || a === "L" ? "1" : a;
+      if (n === "-" || n === " ") continue;
+      if (!JM_SC_ALFABETO.includes(n)) return null;
+      e += n;
+    }
+    e.startsWith("JM") && e.length === 10 && (e = e.slice(2));
+    return e.length === 8 ? e.slice(0, 4) + "-" + e.slice(4) : null;
+  }
   function ma(t) {
     return t === ""
       ? ""
@@ -10291,6 +10349,7 @@ zoo`.split(`
                 }
                 Array.isArray(c.r) &&
                   (l.relays = c.r.map(ha).filter(Boolean).slice(0, 5)),
+                  Array.isArray(c.g) && (l.games = jmCleanGames(c.g)),
                   await this.db.put("contacts", l),
                   this.emit("contact", l),
                   this.emit("chats");
@@ -10299,6 +10358,24 @@ zoo`.split(`
             case "profreq":
               !s && r && r.status === "ok" && this.sendProfile(o);
               return;
+            case "pban": {
+              if (s || !r) return;
+              let l = jmCleanBanner(c.b);
+              if (l === void 0) return;
+              l ? (r.banner = l) : delete r.banner,
+                await this.db.put("contacts", r),
+                this.emit("contact", r);
+              return;
+            }
+            case "lis": {
+              if (s || !a.eph || !r || r.status !== "ok") return;
+              let l = jmCleanListening(c);
+              this.listening || (this.listening = new Map()),
+                l ? this.listening.set(o, { l, at: Date.now() }) : this.listening.delete(o),
+                this.emit("listening", o),
+                this.emit("contact", r);
+              return;
+            }
             case "rcpt":
               !s &&
                 Array.isArray(c.ids) &&
@@ -10605,7 +10682,9 @@ zoo`.split(`
               ? "Som: " + e.media.sb.n
               : e.media && e.media.type === "audio"
                 ? "Mensagem de voz"
-                : "Foto";
+                : e.media && /^image\/gif/i.test(e.media.mime || "")
+                  ? "GIF"
+                  : "Foto";
           case "sound":
             return "Som do soundboard";
           case "invite":
@@ -10971,9 +11050,18 @@ zoo`.split(`
             c: this.me.t,
             p: this.me.pic || "",
             r: this.settings.relays.slice(0, 5),
+            g: this.me.games || [],
           },
           { selfCopy: !1, noTtl: !0 },
         );
+        this.me.banner &&
+          (await this.sendApp(
+            "dm:" + e,
+            { t: "pban", b: this.me.banner },
+            { selfCopy: !1, noTtl: !0 },
+          ));
+        this.myListening &&
+          this.sendApp("dm:" + e, { t: "lis", ...this.myListening.l }, { ephemeral: !0, selfCopy: !1, noTtl: !0 }).catch(() => {});
         let a = this.contacts.get(e);
         a &&
           !a.profSent &&
@@ -11004,6 +11092,108 @@ zoo`.split(`
               await this.sendGroupApp(i, this.joinMsg());
             } catch {}
         })();
+      }
+      /** Banner e jogos favoritos; banner "" tira. Os contatos aceitos recebem. */
+      async updateProfileExtras({ banner: e, games: a }) {
+        let n = !!this.me.banner;
+        if (e !== void 0) {
+          let i = jmCleanBanner(e);
+          if (i === void 0) throw new Error("Banner grande demais");
+          i ? (this.me.banner = i) : delete this.me.banner;
+        }
+        a !== void 0 && (this.me.games = jmCleanGames(a)),
+          await this.setKv("me", this.me);
+        let s = n && !this.me.banner,
+          o = [...this.contacts.values()].filter((i) => i.status === "ok").map((i) => i.pk);
+        (async () => {
+          for (let i of o)
+            try {
+              await this.sendProfile(i),
+                s && (await this.sendApp("dm:" + i, { t: "pban", b: "" }, { selfCopy: !1, noTtl: !0 }));
+            } catch {}
+        })();
+      }
+      /** O que um contato está ouvindo (some sozinho se parar de avisar). */
+      listeningOf(e) {
+        let a = this.listening && this.listening.get(e);
+        return a && jmListeningAlive(a.l, a.at, Date.now()) ? a.l : null;
+      }
+      /**
+       * Conta aos contatos aceitos o que você está ouvindo (null: parou).
+       * Só manda quando muda a música ou, a mesma, a cada 4 min.
+       */
+      async setListening(e) {
+        let a = jmCleanListening(e),
+          n = this.myListening,
+          s = Date.now(),
+          o = (c, l) => c.s === l.s && c.a === l.a && c.id === l.id,
+          r = null;
+        if (!n && !a) return;
+        if (n && !a) (this.myListening = null), (r = { t: "lis", s: "" });
+        else if (n && o(n.l, a) && s - n.at < JM_LIS_HEARTBEAT) return;
+        else
+          n && o(n.l, a) && (a.st = n.l.st),
+            (this.myListening = { l: a, at: s }),
+            (r = { t: "lis", ...a });
+        this.emit("listening", this.pk);
+        for (let c of [...this.contacts.values()].filter((l) => l.status === "ok"))
+          try {
+            await this.sendApp("dm:" + c.pk, r, { ephemeral: !0, selfCopy: !1, noTtl: !0 });
+          } catch {}
+      }
+      /** Código curto de convite (XXXX-XXXX), vale 7 dias. Igual ao do PC. */
+      async createShortCode() {
+        let e = await this.kv("shortCode", null),
+          a = be();
+        (!e || e.exp - a < 3600) && (e = { code: jmShortGenerate(), exp: a + JM_SC_DIAS * Za });
+        let n = ri(this.sk, {
+          kind: JM_SC_KIND,
+          tags: [
+            ["d", "jmenseger:convite:" + e.code],
+            ["expiration", String(e.exp)],
+          ],
+        });
+        if (!(await this.pool.publish(n)).ok) throw new Error("Sem conexão com os servidores.");
+        return await this.setKv("shortCode", e), e;
+      }
+      async shortCode() {
+        let e = await this.kv("shortCode", null);
+        return e && e.exp > be() ? e : null;
+      }
+      /** De quem é um código curto: devolve a chave pública (hex). */
+      async resolveShortCode(e) {
+        let a = jmShortParse(e);
+        if (!a) throw new Error("C\xF3digo inv\xE1lido.");
+        let n = "jmenseger:convite:" + a,
+          s = "sc" + Math.random().toString(36).slice(2, 8),
+          o = new Set(),
+          r = be();
+        await new Promise((c) => {
+          let l = 0,
+            u = (d, m, p) => {
+              p === s &&
+                d &&
+                d.kind === JM_SC_KIND &&
+                Wa(d, "d") === n &&
+                !(Number(Wa(d, "expiration")) && Number(Wa(d, "expiration")) < r) &&
+                Re.test(d.pubkey) &&
+                mr(d) &&
+                o.add(d.pubkey);
+            },
+            f = (d, m) => {
+              m === s && ++l >= Math.max(1, this.pool.openCount()) && h();
+            },
+            h = () => {
+              clearTimeout(g), x1(), x2(), this.pool.unsubscribe(s), c();
+            },
+            g = setTimeout(h, 6e3),
+            x1 = this.pool.on("event", u),
+            x2 = this.pool.on("eose", f);
+          this.pool.subscribe(s, () => [{ kinds: [JM_SC_KIND], "#d": [n], limit: 5 }]);
+        });
+        if (o.size === 0) throw new Error("C\xF3digo n\xE3o encontrado ou vencido. Pe\xE7a um c\xF3digo novo.");
+        if (o.size > 1) throw new Error("Esse c\xF3digo est\xE1 duplicado nos servidores. Pe\xE7a o c\xF3digo completo (npub1\u2026).");
+        return [...o][0];
       }
       joinMsg() {
         return { t: "gjoin", n: this.me.name, p: this.me.pic || "" };
@@ -14887,16 +15077,17 @@ zoo`.split(`
         u = a.width,
         d = a.height,
         f = i.clientWidth || 280,
-        p = Math.max(f / u, f / d),
+        fh = e === "banner" ? f / 3 : f,
+        p = Math.max(f / u, fh / d),
         v = 1,
         k = (f - u * p) / 2,
-        L = (f - d * p) / 2;
+        L = (fh - d * p) / 2;
       (c.style.width = u * p + "px"), (c.style.height = d * p + "px");
       let N = () => {
           let T = u * p * v,
             g = d * p * v;
           (k = Math.min(0, Math.max(f - T, k))),
-            (L = Math.min(0, Math.max(f - g, L))),
+            (L = Math.min(0, Math.max(fh - g, L))),
             (c.style.transform = `translate3d(${k}px,${L}px,0) scale(${v})`);
         },
         V = (T, g, w) => {
@@ -14962,6 +15153,15 @@ zoo`.split(`
         b("cropOk", () => {
           let T = p * v,
             g = document.createElement("canvas");
+          if (e === "banner") {
+            (g.width = 600), (g.height = 200);
+            let w = g.getContext("2d");
+            (w.imageSmoothingQuality = "high"),
+              w.drawImage(a, -k / T, -L / T, f / T, fh / T, 0, 0, 600, 200),
+              r(jmBannerDataUrl(g)),
+              F();
+            return;
+          }
           g.width = g.height = Si;
           let w = g.getContext("2d");
           (w.imageSmoothingQuality = "high"),
@@ -14970,6 +15170,22 @@ zoo`.split(`
           r(m), F();
         });
     });
+  }
+  /** Banner 600×200 que cabe no limite do protocolo (24 000 caracteres). */
+  function jmBannerDataUrl(t) {
+    let e = t.toDataURL("image/webp", 0.8).startsWith("data:image/webp") ? "image/webp" : "image/jpeg",
+      a = t;
+    for (let n of [600, 480, 360, 300]) {
+      if (n !== a.width) {
+        let o = document.createElement("canvas");
+        (o.width = n), (o.height = n / 3), o.getContext("2d").drawImage(t, 0, 0, n, n / 3), (a = o);
+      }
+      for (let o = 0.82; o >= 0.3; o -= 0.08) {
+        let r = a.toDataURL(e, o);
+        if (r.length <= JM_BANNER_MAX) return r;
+      }
+    }
+    return null;
   }
   function a0(t) {
     let e = t.toDataURL("image/webp", 0.8).startsWith("data:image/webp")
@@ -15979,7 +16195,12 @@ zoo`.split(`
       e = C.chat;
     if (e.kind === "dm") {
       if (ya(C.key)) return { live: !0, html: "digitando\u2026" };
-      let o = t.contacts.get(e.pk);
+      let o = t.contacts.get(e.pk),
+        lis = t.listeningOf && t.listeningOf(e.pk);
+      if (lis)
+        return {
+          html: `<span class="lstat">${x("music", "xs")} Ouvindo ${M(lis.s)}${lis.a ? " \u2014 " + M(lis.a) : ""}</span>`,
+        };
       return o && o.status === "request"
         ? { html: "Fora dos seus contatos" }
         : e.ttl
@@ -16130,7 +16351,7 @@ zoo`.split(`
         r = a.h || 3,
         c = `width:250px;aspect-ratio:${1 / Math.min(1.5, Math.max(0.6, r / o))}`;
       if (a.ready)
-        return `<span class="photo" style="${c}" data-act="viewPhoto" data-mid="${a.mid}"><img data-mid="${a.mid}" alt="Foto"></span>`;
+        return `<span class="photo" style="${c}" data-act="viewPhoto" data-mid="${a.mid}"><img data-mid="${a.mid}" alt="Foto">${/^image\/gif/i.test(a.mime || "") ? '<i class="gifbadge">GIF</i>' : ""}</span>`;
       let l = a.err
         ? "Foto corrompida"
         : n && !a.ready
@@ -16355,9 +16576,11 @@ zoo`.split(`
     let t = y("#msgin", C.el),
       e = t ? t.value.trim() : "";
     if (!e) return _u();
-    let a = C.reply;
+    let a = C.reply,
+      jmFoco = document.activeElement === t;
     (t.value = ""),
       vo(t),
+      jmFoco && t.focus({ preventScroll: !0 }),
       wo(),
       (C.reply = null),
       (y("#replyslot", C.el).innerHTML = "");
@@ -16370,6 +16593,27 @@ zoo`.split(`
     }
   }
   b("send", () => Nu());
+  // Vídeo do outro lado: toque alterna entre preencher a tela e ver inteiro
+  // (para a tela transmitida do computador não ficar cortada).
+  b("rvidFit", () => {
+    let t = y("#rvid");
+    if (!t) return;
+    (h.rvidFit = !t.classList.contains("fit")), t.classList.toggle("fit", h.rvidFit), _(h.rvidFit ? "Mostrando o v\xEDdeo inteiro" : "V\xEDdeo preenchendo a tela", 1200);
+  });
+  /*
+   * Teclado ao enviar: tocar no botão tirava o foco do campo, o teclado
+   * fechava e a tela pulava. Com o campo em foco, o toque no botão não
+   * rouba o foco, e depois de enviar o campo continua pronto para a próxima.
+   */
+  document.addEventListener(
+    "pointerdown",
+    (t) => {
+      let e = t.target.closest && t.target.closest("#sendbtn"),
+        a = document.activeElement;
+      e && a && a.id === "msgin" && a.value.trim() && t.preventDefault();
+    },
+    !0,
+  );
   async function _u() {
     if (!C || C.rec) return;
     let t = new fo();
@@ -16641,7 +16885,8 @@ zoo`.split(`
   <button class="atile" data-act="pickPhoto"><span class="ab">${x("image")}</span>Galeria</button>
   <button class="atile" data-act="cameraPhoto"><span class="ab">${x("camera")}</span>C\xE2mera</button>
   <button class="atile hot" data-act="attachSound"><span class="ab">${x("wave")}</span>Som</button>
-  <button class="atile" data-act="attachVoice"><span class="ab">${x("mic")}</span>\xC1udio</button></div>
+  <button class="atile" data-act="attachVoice"><span class="ab">${x("mic")}</span>\xC1udio</button>
+  <button class="atile" data-act="gifSheet"><span class="ab">${x("gif")}</span>GIF</button></div>
   <p class="note" style="padding:14px 2px 0">Fotos s\xE3o reduzidas e os metadados (como localiza\xE7\xE3o) s\xE3o removidos antes de sair do aparelho.</p>`),
   );
   b("attachVoice", () => {
@@ -16665,7 +16910,7 @@ zoo`.split(`
     if (!e) return;
     let a;
     try {
-      a = await xu(t);
+      a = t.type === "image/gif" && t.size <= JM_GIF_MAX ? await jmGifPrep(t) : await xu(t);
     } catch {
       _("N\xE3o foi poss\xEDvel abrir essa imagem.");
       return;
@@ -16702,6 +16947,93 @@ zoo`.split(`
     (y("#viewer").hidden = !0), (y("#viewer").innerHTML = "");
   });
   b("attachSound", () => P.soundSheet("chat"));
+  /* ---------- GIFs (GIPHY com a chave do app; GIF da galeria) ---------- */
+  var JM_GIF_MAX = 2e6,
+    JM_GIPHY_KEY = "HPMOkQnffVZSf1lRx8PmAhJ5j2D0UMgj",
+    jmGif = { seq: 0, t: null, hits: [], sending: !1 };
+  /** GIF pronto para mandar: os bytes como vieram, tamanho e miniatura do 1º quadro. */
+  async function jmGifPrep(t) {
+    let e = new Uint8Array(await t.arrayBuffer());
+    if (e.length > JM_GIF_MAX) throw new Error("GIF grande demais (at\xE9 2 MB)");
+    let a = await createImageBitmap(t),
+      n = a.width || 1,
+      s = a.height || 1,
+      o = 24 / Math.max(n, s),
+      r = document.createElement("canvas");
+    (r.width = Math.max(1, Math.round(n * o))), (r.height = Math.max(1, Math.round(s * o))), r.getContext("2d").drawImage(a, 0, 0, r.width, r.height), a.close && a.close();
+    return { bytes: e, mime: "image/gif", w: n, h: s, th: r.toDataURL("image/jpeg", 0.5) };
+  }
+  function jmGiphyHits(t) {
+    return ((t && t.data) || [])
+      .map((e) => {
+        let a = e.images || {},
+          n = a.fixed_width_downsampled || a.fixed_width_small || a.fixed_width,
+          s = [a.downsized, a.fixed_width].find((o) => o && o.url && +o.size > 0 && +o.size <= JM_GIF_MAX) || n;
+        return n && n.url ? { id: e.id, title: e.title || "", prev: n.url, send: s.url, w: +n.width || 200, h: +n.height || 150 } : null;
+      })
+      .filter(Boolean);
+  }
+  async function jmGiphySearch(t) {
+    let e = ++jmGif.seq,
+      a = y("#gifgrid");
+    a && (a.innerHTML = '<div class="note" style="padding:20px;column-span:all">Buscando\u2026</div>');
+    let n = t.trim()
+      ? "https://api.giphy.com/v1/gifs/search?api_key=" + JM_GIPHY_KEY + "&q=" + encodeURIComponent(t.trim()) + "&limit=24&rating=pg-13&lang=pt"
+      : "https://api.giphy.com/v1/gifs/trending?api_key=" + JM_GIPHY_KEY + "&limit=24&rating=pg-13";
+    try {
+      let s = await fetch(n, { referrerPolicy: "no-referrer", credentials: "omit" });
+      if (!s.ok) throw new Error(s.status === 429 ? "Limite de buscas do GIPHY atingido. Tente daqui a pouco." : "O GIPHY respondeu com erro " + s.status + ".");
+      let o = jmGiphyHits(await s.json());
+      if (e !== jmGif.seq) return;
+      (jmGif.hits = o), (a = y("#gifgrid"));
+      a &&
+        (a.innerHTML = o.length
+          ? o.map((r, i) => `<button data-act="gifPick" data-i="${i}" style="aspect-ratio:${r.w}/${r.h}"><img src="${M(r.prev)}" alt="${M(r.title)}" loading="lazy" referrerpolicy="no-referrer"></button>`).join("")
+          : '<div class="note" style="padding:20px;column-span:all">Nenhum GIF encontrado.</div>');
+    } catch (s) {
+      e === jmGif.seq && (a = y("#gifgrid")) && (a.innerHTML = `<div class="errtx" style="padding:20px;column-span:all">${M(s.message && !/fetch/i.test(s.message) ? s.message : "Sem conex\xE3o com o GIPHY. Confira a internet.")}</div>`);
+    }
+  }
+  b("gifSheet", () => {
+    F(),
+      setTimeout(() => {
+        ee(`<h2 class="sh-title">GIFs</h2>
+      <label class="search" style="margin:4px 0 0"><svg class="i sm"><use href="#i-search"/></svg><input id="gifq" type="search" placeholder="Buscar no GIPHY" autocomplete="off"></label>
+      <div class="gifgrid" id="gifgrid"></div>
+      <div class="gifcred">Powered by GIPHY</div>
+      <button class="btn ghost" data-act="gifFromGallery">${x("image", "sm")}&nbsp;GIF da galeria</button>`),
+          jmGiphySearch("");
+      }, 240);
+  });
+  document.addEventListener("input", (t) => {
+    t.target.id === "gifq" && (clearTimeout(jmGif.t), (jmGif.t = setTimeout(() => jmGiphySearch(t.target.value), 380)));
+  });
+  b("gifFromGallery", () => {
+    F(),
+      Kn("image/gif").then((t) => {
+        t && ju(t);
+      });
+  });
+  b("gifPick", async (t) => {
+    let e = jmGif.hits[+t.dataset.i],
+      a = C && C.key;
+    if (!e || !a || jmGif.sending) return;
+    (jmGif.sending = !0), t.insertAdjacentHTML("beforeend", '<span class="sending">Enviando\u2026</span>');
+    try {
+      let n = await fetch(e.send, { referrerPolicy: "no-referrer", credentials: "omit" });
+      if (!n.ok) throw new Error("N\xE3o deu para baixar o GIF.");
+      let s = await n.blob();
+      if (s.size > JM_GIF_MAX) throw new Error("GIF grande demais.");
+      let o = await jmGifPrep(new Blob([s], { type: "image/gif" }));
+      F(), await h.engine.sendMedia(a, o.bytes, { type: "image", mime: o.mime, w: o.w, h: o.h, th: o.th });
+    } catch (n) {
+      _(n.message || "N\xE3o deu para mandar o GIF.");
+      let s = t.querySelector(".sending");
+      s && s.remove();
+    } finally {
+      jmGif.sending = !1;
+    }
+  });
   b("emoji", () => {
     ee(
       `<h2 class="sh-title">Emojis</h2><div class="egrid">${["\u{1F600}", "\u{1F602}", "\u{1F979}", "\u{1F60D}", "\u{1F60E}", "\u{1F914}", "\u{1F62E}", "\u{1F622}", "\u{1F621}", "\u{1F64F}", "\u{1F44D}", "\u{1F44F}", "\u{1F525}", "\u2764\uFE0F", "\u{1F389}", "\u{1F3B8}", "\u{1F3AE}", "\u2615", "\u{1F355}", "\u2728", "\u{1F4AC}", "\u{1F440}", "\u{1F91D}", "\u{1F4AF}", "\u{1F634}", "\u{1F92F}", "\u{1F973}", "\u{1F605}"].map((e) => `<button data-act="putEmoji" data-e="${e}">${e}</button>`).join("")}</div>`,
@@ -16889,9 +17221,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     J.pop(!0), P.newGroup();
   });
   function on(t = "") {
-    ee(`<h2 class="sh-title">Adicionar contato</h2><p class="sh-sub">Cole o c\xF3digo que a pessoa compartilhou (come\xE7a com <b>npub1</b>) ou leia o QR dela.</p>
+    ee(`<h2 class="sh-title">Adicionar contato</h2><p class="sh-sub">Cole o c\xF3digo que a pessoa compartilhou (come\xE7a com <b>npub1</b>), digite o <b>c\xF3digo curto</b> dela (como K7QF-9X2M) ou leia o QR.</p>
     <label class="lbl" for="addcode">C\xF3digo</label>
-    <textarea class="inp mono" id="addcode" rows="3" placeholder="npub1\u2026" spellcheck="false" autocapitalize="off">${M(t)}</textarea>
+    <textarea class="inp mono" id="addcode" rows="3" placeholder="npub1\u2026 ou K7QF-9X2M" spellcheck="false" autocapitalize="off">${M(t)}</textarea>
     <div class="errtx" id="adderr" hidden></div>
     <label class="lbl" for="addnick">Nome (opcional)</label>
     <input class="inp" id="addnick" maxlength="40" placeholder="Como voc\xEA quer ver esse contato" autocomplete="off">
@@ -16919,6 +17251,15 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       n = (t.match(/[?&]n=([^&\s]+)/) || [])[1];
     try {
       let s = to(t);
+      if (!s && jmShortParse(t)) {
+        let o = y("[data-act=confirmAdd]");
+        o && ((o.disabled = !0), (o.textContent = "Procurando o c\xF3digo\u2026"));
+        try {
+          s = await h.engine.resolveShortCode(t);
+        } finally {
+          o && ((o.disabled = !1), (o.textContent = "Adicionar e conversar"));
+        }
+      }
       if (!s)
         throw new Error(
           "C\xF3digo inv\xE1lido. Confira se copiou tudo, come\xE7ando por npub1.",
@@ -16962,8 +17303,30 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ee(`<h2 class="sh-title">Meu c\xF3digo</h2><p class="sh-sub">Quem ler este QR ou receber seu c\xF3digo consegue te mandar mensagens. N\xE3o \xE9 preciso telefone nem e-mail.</p>
     <div class="qrcard">${vu(A0())}<span class="qn">${M(t.me.name)}</span><small>J-Menseger</small></div>
     <div class="idbox selectable"><span>${M(t.myNpub())}</span><button class="ibtn sm" data-act="copyMyCode" aria-label="Copiar c\xF3digo">${x("copy", "sm")}</button></div>
-    <div class="two" style="margin-top:14px"><button class="btn ghost" data-act="scanFromMine" style="margin:0">${x("scan", "sm")}&nbsp;Ler QR</button><button class="btn" data-act="shareMyCode" style="margin:0">${x("share", "sm")}&nbsp;Compartilhar</button></div>`);
+    <div class="two" style="margin-top:14px"><button class="btn ghost" data-act="scanFromMine" style="margin:0">${x("scan", "sm")}&nbsp;Ler QR</button><button class="btn" data-act="shareMyCode" style="margin:0">${x("share", "sm")}&nbsp;Compartilhar</button></div>
+    <label class="lbl">C\xF3digo curto</label>
+    <p class="note" style="padding:0">Mais f\xE1cil de ditar ou digitar. Vale por 7 dias; depois \xE9 s\xF3 gerar outro.</p>
+    <div id="scbox"><button class="btn ghost" data-act="makeShortCode">${x("key", "sm")}&nbsp;Gerar c\xF3digo curto</button></div>`),
+      t.shortCode().then((e) => e && jmShowShort(e));
   }
+  function jmShowShort(t) {
+    let e = y("#scbox");
+    if (!e) return;
+    let a = Math.max(1, Math.round((t.exp - be()) / Za));
+    e.innerHTML = `<div class="sccode selectable">${M(t.code)}</div><p class="note" style="text-align:center;padding:6px 0 0">Vale por mais ${a} ${a === 1 ? "dia" : "dias"}</p>
+    <button class="btn ghost" data-act="copyShortCode" data-code="${M(t.code)}">${x("copy", "sm")}&nbsp;Copiar c\xF3digo curto</button>`;
+  }
+  b("makeShortCode", async (t) => {
+    (t.disabled = !0), (t.textContent = "Gerando\u2026");
+    try {
+      jmShowShort(await h.engine.createShortCode());
+    } catch (e) {
+      _(e.message), (t.disabled = !1), (t.textContent = "Gerar c\xF3digo curto");
+    }
+  });
+  b("copyShortCode", async (t) => {
+    (await X.copy(t.dataset.code)) && _("C\xF3digo copiado");
+  });
   b("myCode", () => Ni());
   b("copyMyCode", async () => {
     (await X.copy(h.engine.myNpub())) && _("C\xF3digo copiado");
@@ -16978,10 +17341,11 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       n = e.contacts.get(t) || {},
       s = e.chatFor("dm:" + t),
       o = [...e.groups.values()].filter((i) => i.meta.members.includes(t));
-    return J.open(
+    let jmEl = J.open(
       "profile",
       `<div class="sc-top"><div class="subhead"><button class="ibtn" data-act="back" aria-label="Voltar">${x("back")}</button><h2>Perfil</h2></div>
     <div class="scroll">
+      <div class="pbanwrap">${n.banner ? `<img class="pbanner" src="${n.banner}" alt="">` : `<div class="pbanner empty"></div>`}</div>
       <div class="cinfo" style="padding:12px 18px 0">${pe(t, 96, { ring: "var(--bg)" })}<h3>${M(a.name)}</h3><p>${M(n.note || "")}</p>
         ${n.nick && n.name && n.nick !== n.name ? `<p style="font-size:13px;color:var(--fg3)">Nome no perfil: ${M(n.name)}</p>` : ""}</div>
       <div class="agrid" style="padding:0 12px">
@@ -16989,6 +17353,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         <button class="atile" data-act="profCall" data-pk="${t}"><span class="ab">${x("phone")}</span>Voz</button>
         <button class="atile" data-act="profCall" data-pk="${t}" data-video="1"><span class="ab">${x("video")}</span>V\xEDdeo</button>
         <button class="atile" data-act="profNick" data-pk="${t}"><span class="ab">${x("edit")}</span>Renomear</button></div>
+      <div id="jmprofx">${jmProfileExtras(t)}</div>
       <div class="label">Identidade</div>
       <div style="padding:0 18px"><div class="idbox selectable"><span>${M(ao(t))}</span><button class="ibtn sm" data-act="copyPk" data-pk="${t}" aria-label="Copiar c\xF3digo">${x("copy", "sm")}</button></div></div>
       <div class="srow" role="button" tabindex="0" data-act="safety" data-pk="${t}"><span class="sic">${x("shield")}</span><span class="sm"><b>C\xF3digo de seguran\xE7a</b><small>${n.verified ? "Verificado por voc\xEA" : "Compare com a outra pessoa para confirmar que \xE9 ela"}</small></span><span class="chev">${x("chev", "sm")}</span></div>
@@ -17000,7 +17365,34 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       <div class="srow danger" role="button" tabindex="0" data-act="profDelete" data-pk="${t}"><span class="sic">${x("trash")}</span><span class="sm"><b>Apagar conversa</b><small>Remove as mensagens deste aparelho</small></span></div>
       <div style="height:40px"></div></div></div>`,
     );
+    return jmEl && jmEl.dataset && (jmEl.dataset.pk = t), jmEl;
   }
+  /** Cartão "Ouvindo Spotify" e jogos favoritos de alguém. */
+  function jmProfileExtras(t) {
+    let e = h.engine,
+      a = t === e.pk ? e.me : e.contacts.get(t) || {},
+      n = t === e.pk ? e.myListening && e.myListening.l : e.listeningOf(t),
+      s = "";
+    if (n) {
+      let o = Math.max(0, (Date.now() - (n.st || Date.now())) / 1e3),
+        r = (c) => Math.floor(c / 60) + ":" + String(Math.floor(c % 60)).padStart(2, "0");
+      s += `<div class="lcard"><div class="lhd">${x("music", "xs")} OUVINDO SPOTIFY</div>
+      <div class="lbody"><span class="lcover">${x("music")}</span><div style="min-width:0"><b>${M(n.s)}</b>${n.a ? `<small>de ${M(n.a)}</small>` : ""}${n.al ? `<small>em ${M(n.al)}</small>` : ""}</div></div>
+      ${n.d && n.st ? `<div class="lbar"><i style="width:${Math.min(100, (o / n.d) * 100).toFixed(1)}%"></i></div><div class="ltimes"><span>${r(Math.min(o, n.d))}</span><span>${r(n.d)}</span></div>` : n.st ? `<div class="ltimes"><span>Tocando h\xE1 ${r(o)}</span></div>` : ""}
+      <button class="lbtn" data-act="openSpotifyTrack" data-url="${M(jmListeningUrl(n))}">Ouvir no Spotify</button></div>`;
+    }
+    let o = a.games || [];
+    return (
+      o.length &&
+        (s += `<div class="label">Jogos favoritos</div><div class="games">${o.map((r) => `<span class="chip">${x("game", "xs")}${M(r)}</span>`).join("")}</div>`),
+      s
+    );
+  }
+  function jmRefreshProfile(t) {
+    let e = y("#jmprofx");
+    e && (e.innerHTML = jmProfileExtras(t));
+  }
+  b("openSpotifyTrack", (t) => X.openUrl(t.dataset.url));
   b("openProfile", (t) => rn(t.dataset.pk));
   b("profMsg", (t) => {
     J.pop(), J.find("chat") || P.openChat("dm:" + t.dataset.pk);
@@ -17878,10 +18270,10 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     if (!H) return;
     let t = H,
       e = Jt(),
-      a = `<div class="ctop"><button class="ibtn" data-act="callMin" aria-label="Minimizar">${x("chevd")}</button><span class="enc">${x("lock", "xs")}Cifrada de ponta a ponta</span><span style="width:40px"></span></div>`,
+      a = `<div class="ctop"><button class="ibtn" data-act="callMin" aria-label="Minimizar">${x("chevd")}</button><span class="enc">${x("lock", "xs")}Cifrada de ponta a ponta</span><button class="ibtn" id="rvidfit" data-act="rvidFit" aria-label="Ver o v\xEDdeo inteiro ou preenchendo a tela" ${t.remoteCam ? "" : "hidden"}>${x("scan")}</button></div>`,
       n = `<div class="cmid"><div class="bigav ${t.state === "active" ? "" : "calling"}" data-sp="remote"><i class="ring"></i><i class="ring r2"></i><i class="ring r3"></i>${pe(t.pk, 140, { badge: !1 })}</div>
     <h2 class="cname2">${M(ne(t.pk))}</h2><p class="cstat ${t.state === "active" ? "live" : ""}" id="cstat">${M(Fi())}</p><div id="cplay"></div></div>`,
-      s = `<video class="rvid" id="rvid" autoplay playsinline ${t.remoteCam ? "" : "hidden"}></video><video class="lvid ${t.front ? "" : "back"}" id="lvid" autoplay playsinline muted ${t.cam && t.stream ? "" : "hidden"}></video>`,
+      s = `<video class="rvid ${h.rvidFit ? "fit" : ""}" id="rvid" autoplay playsinline ${t.remoteCam ? "" : "hidden"}></video><video class="lvid ${t.front ? "" : "back"}" id="lvid" autoplay playsinline muted ${t.cam && t.stream ? "" : "hidden"}></video>`,
       o;
     t.state === "incoming"
       ? (o = `${t.video ? `<div class="ctrls"><button class="cbtn" data-act="cAcceptVoice"><span class="cc">${x("phone")}</span>Atender s\xF3 voz</button></div>` : ""}
@@ -17897,7 +18289,12 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       (t &&
         H.peer &&
         t.srcObject !== H.peer.remote &&
-        ((t.srcObject = H.peer.remote), t.play().catch(() => {})),
+        ((t.srcObject = H.peer.remote),
+        t.play().catch(() => {}),
+        (t.onresize = () => {
+          // Vídeo deitado (tela do computador) aparece inteiro; câmera em pé preenche.
+          h.rvidFit === void 0 && t.classList.toggle("fit", t.videoWidth > t.videoHeight * 1.15);
+        })),
       e &&
         H.stream &&
         H.cam &&
@@ -17906,6 +18303,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       Jt().classList.toggle("hasvid", !!H.remoteCam),
       t && (t.hidden = !H.remoteCam),
       e && (e.hidden = !(H.cam && H.stream)));
+    let jmFit = y("#rvidfit");
+    jmFit && (jmFit.hidden = !H || !H.remoteCam);
   }
   function Qn() {
     let t = y("#cstat");
@@ -18650,6 +19049,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     <div class="label">Aplicativo</div>
     ${le({ i: "drop", n: "Apar\xEAncia", s: 'Cores \xB7 destaque <span class="acc-name">' + M(mi()) + "</span>", act: "openAppearance", dot: !0 })}
     ${le({ i: "wave", n: "Soundboard", s: "Ouvir, adicionar e excluir os sons das chamadas", act: "openSoundsS" })}
+    ${le({ i: "mic", n: "Voz e \xE1udio", s: "Microfone, ru\xEDdo e eco nas chamadas", act: "openAudio" })}
     ${le({ i: "server", n: "Rede e servidores", s: `Conectado a ${a} de ${n} servidores`, act: "openNetwork" })}
     ${le({ i: "db", n: "Armazenamento", s: "Espa\xE7o usado e limpeza de m\xEDdia", act: "openStorage" })}
     <div class="label">Sobre</div>
@@ -18688,8 +19088,102 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     <div class="tones">${[0, 1, 2, 3, 4, 5].map((e) => `<button class="${e === dn ? "on" : ""}" data-act="profTone" data-t="${e}" aria-label="Cor ${e + 1}"><span class="av t${e}" style="--sz:34px"></span></button>`).join("")}</div>
     <label class="lbl" for="pname">Nome</label><input class="inp" id="pname" maxlength="40" value="${M(t.me.name)}">
     <label class="lbl" for="pnote">Recado</label><input class="inp" id="pnote" maxlength="80" value="${M(t.me.note || "")}" placeholder="Dispon\xEDvel para conversar">
-    <button class="btn" data-act="saveProfile">Salvar</button>`);
+    <button class="btn" data-act="saveProfile">Salvar</button>
+    <div id="pextras">${jmMyExtras()}</div>`);
   });
+  /** Banner, jogos favoritos e Spotify na folha "Seu perfil". */
+  function jmMyExtras() {
+    let t = h.engine,
+      e = t.me.games || [],
+      a = h.spotify || {},
+      n = a.cur;
+    return `<label class="lbl">Banner</label>
+    ${t.me.banner ? `<img class="pbanner" src="${t.me.banner}" alt="">` : '<div class="pbanner empty"></div>'}
+    <div class="two" style="margin-top:10px"><button class="btn ghost" data-act="myBanner" style="margin:0">${x("image", "sm")}&nbsp;${t.me.banner ? "Mudar banner" : "Colocar banner"}</button>${t.me.banner ? `<button class="btn ghost" data-act="myBannerDel" style="margin:0">${x("trash", "sm")}&nbsp;Remover</button>` : ""}</div>
+    <label class="lbl">Jogos favoritos</label>
+    <p class="note" style="padding:0 0 8px">Aparecem no seu perfil para os seus contatos, como no Discord. At\xE9 6.</p>
+    <div class="games" style="padding:0">${e.length ? e.map((s, o) => `<span class="chip">${x("game", "xs")}${M(s)}<button data-act="gameDel" data-i="${o}" aria-label="Tirar">\xD7</button></span>`).join("") : '<span class="note">Nenhum jogo ainda.</span>'}</div>
+    ${e.length < 6 ? '<div class="gameadd" style="padding:10px 0 0"><input class="inp" id="pgame" maxlength="30" placeholder="Nome do jogo" autocomplete="off"><button class="btn" data-act="gameAdd">Adicionar</button></div>' : ""}
+    <label class="lbl">Atividade</label>
+    <div class="srow" role="button" tabindex="0" data-act="spotifyTgl" style="margin:0 -18px"><span class="sic">${x("music")}</span><span class="sm"><b>Mostrar a m\xFAsica do Spotify</b><small>Seus contatos veem o que est\xE1 tocando, como no Discord</small></span><span class="sw" role="switch" aria-checked="${!!a.share}"></span></div>
+    <p class="note" style="padding:6px 0 0">${n ? "Tocando agora: " + M(n.s) + (n.a ? " \u2014 " + M(n.a) : "") : "Nada tocando no Spotify agora."}</p>
+    ${X.available ? `<p class="note" style="padding:6px 0 0">Para o J-Menseger ver a m\xFAsica, ligue no Spotify: <b>Configura\xE7\xF5es \u2192 Transmiss\xE3o do status do dispositivo</b> (\u201CDevice Broadcast Status\u201D).</p><button class="btn ghost" data-act="openSpotifyApp">${x("music", "sm")}&nbsp;Abrir o Spotify</button>` : ""}`;
+  }
+  function jmRedrawExtras() {
+    let t = y("#pextras");
+    t && (t.innerHTML = jmMyExtras());
+  }
+  b("myBanner", async () => {
+    let t = h.engine;
+    F(),
+      setTimeout(async () => {
+        let e = await ho({ title: "Banner do perfil", hasPic: !!t.me.banner, shape: "banner", facing: "environment" });
+        if (e === null) return;
+        try {
+          await t.updateProfileExtras({ banner: e }),
+            _(e ? "Banner atualizado. Seus contatos recebem o novo banner." : "Banner removido");
+        } catch (a) {
+          _(a.message);
+        }
+      }, 260);
+  });
+  b("myBannerDel", async () => {
+    await h.engine.updateProfileExtras({ banner: "" }), jmRedrawExtras(), _("Banner removido");
+  });
+  b("gameAdd", async () => {
+    let t = y("#pgame"),
+      e = t && t.value.trim();
+    if (!e) return;
+    await h.engine.updateProfileExtras({ games: [...(h.engine.me.games || []), e] }), jmRedrawExtras();
+    let a = y("#pgame");
+    a && a.focus();
+  });
+  b("gameDel", async (t) => {
+    let e = [...(h.engine.me.games || [])];
+    e.splice(+t.dataset.i, 1), await h.engine.updateProfileExtras({ games: e }), jmRedrawExtras();
+  });
+  document.addEventListener("keydown", (t) => {
+    t.key === "Enter" && t.target && t.target.id === "pgame" && (t.preventDefault(), vt.gameAdd && vt.gameAdd(t.target));
+  });
+  b("spotifyTgl", async () => {
+    let t = (h.spotify = h.spotify || {});
+    (t.share = !t.share), await h.engine.setKv("spotifyShare", t.share), jmSpotifyPush(), jmRedrawExtras();
+  });
+  b("openSpotifyApp", () => {
+    try {
+      window.JMNative && window.JMNative.openSpotify();
+    } catch {}
+  });
+  /** Música do Spotify vista pelo Android (ou null) -> conta aos contatos. */
+  function jmSpotifyFrom(t) {
+    let e = (h.spotify = h.spotify || {});
+    if (!t || !t.s) {
+      (e.cur = null), jmSpotifyPush(), jmRedrawExtras();
+      return;
+    }
+    let a = String(t.id || "").split(":"),
+      n = a[0] === "spotify" && a[1] === "track" ? a[2] : void 0,
+      s = Number(t.len) || 0,
+      o = s > 2e4 ? Math.round(s / 1e3) : s || void 0;
+    (e.cur && e.cur.s === t.s && e.cur.a === t.a) || (e.st = Date.now()),
+      (e.cur = { s: t.s, a: t.a || "", al: t.al || "", id: n, d: o }),
+      jmSpotifyPush(),
+      jmRedrawExtras();
+  }
+  function jmSpotifyPush() {
+    let t = h.engine,
+      e = h.spotify || {};
+    t && t.me && t.setListening(e.share && e.cur ? { ...e.cur, st: e.st } : null).catch(() => {});
+  }
+  async function jmSpotifyInit(t) {
+    let e = (h.spotify = h.spotify || {});
+    e.share = await t.kv("spotifyShare", !1);
+    try {
+      let a = window.JMNative && window.JMNative.nowPlaying && window.JMNative.nowPlaying();
+      a && jmSpotifyFrom(JSON.parse(a));
+    } catch {}
+    setInterval(jmSpotifyPush, 6e4);
+  }
   b("profTone", (t) => {
     (dn = +t.dataset.t),
       oe(".tones button").forEach((e) => e.classList.toggle("on", e === t)),
@@ -19147,6 +19641,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ${le({ i: "phone", n: "Vibrar", act: "tglN", data: 'data-k="vibrate"', sw: t.vibrate })}
     <div class="label">Android</div>
     ${le({ i: "battery", n: "Permitir uso em segundo plano", s: "Evita que o sistema pause o app para economizar bateria", act: "batterySettings" })}
+    ${jmFullScreenOk() ? "" : le({ i: "phone", n: "Chamadas em tela cheia", s: "Desligado: com o celular bloqueado, a chamada chega s\xF3 como notifica\xE7\xE3o. Toque para permitir.", act: "fullScreenSettings", dot: !0 })}
     ${le({ i: "sliders", n: "Configura\xE7\xF5es do app no Android", s: "Permiss\xF5es de c\xE2mera, microfone e notifica\xE7\xF5es", act: "appSettings" })}
     <p class="note">Sem servidores de notifica\xE7\xE3o do Google: o pr\xF3prio app mant\xE9m a conex\xE3o cifrada quando a op\xE7\xE3o de segundo plano est\xE1 ligada.</p>`);
   }
@@ -19160,6 +19655,112 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       kf();
   });
   b("batterySettings", () => X.batterySettings());
+  function jmFullScreenOk() {
+    try {
+      return !window.JMNative || !window.JMNative.fullScreenAllowed || window.JMNative.fullScreenAllowed();
+    } catch {
+      return !0;
+    }
+  }
+  b("fullScreenSettings", () => {
+    try {
+      window.JMNative.fullScreenSettings();
+    } catch {}
+  });
+  /* ---------- Voz e áudio: microfone e ajustes de som das chamadas ---------- */
+  var jmAudio = { deviceId: "", ec: !0, ns: !0, agc: !0 },
+    jmMic = null;
+  function jmApplyAudio() {
+    ($i.echoCancellation = jmAudio.ec), ($i.noiseSuppression = jmAudio.ns), ($i.autoGainControl = jmAudio.agc);
+    jmAudio.deviceId ? ($i.deviceId = { ideal: jmAudio.deviceId }) : delete $i.deviceId;
+  }
+  async function jmAudioInit(t) {
+    Object.assign(jmAudio, (await t.kv("audioPrefs", null)) || {}), jmApplyAudio();
+  }
+  async function jmAudioSave() {
+    jmApplyAudio(), await h.engine.setKv("audioPrefs", jmAudio);
+  }
+  function jmMicStop() {
+    jmMic && (cancelAnimationFrame(jmMic.raf), jmMic.stream.getTracks().forEach((t) => t.stop()), jmMic.ctx.close().catch(() => {}), jmMic.audio && (jmMic.audio.srcObject = null)), (jmMic = null);
+  }
+  async function jmAudioPage() {
+    let t = y("#audbody");
+    if (!t) return;
+    let e = [];
+    try {
+      e = (await navigator.mediaDevices.enumerateDevices()).filter((n) => n.kind === "audioinput");
+    } catch {}
+    let a = e.some((n) => n.label);
+    t.innerHTML = `<div style="height:8px"></div>
+    <div class="label">Microfone</div>
+    <div class="opts" style="padding:0 18px">${[{ deviceId: "", label: "Padr\xE3o do sistema" }, ...e.filter((n) => n.deviceId && n.deviceId !== "default")]
+      .map((n, s) => `<button class="opt ${jmAudio.deviceId === n.deviceId ? "on" : ""}" data-act="audDev" data-id="${M(n.deviceId)}"><span class="rad"></span>${M(n.label || "Microfone " + s)}</button>`)
+      .join("")}</div>
+    ${a ? "" : '<p class="note">Os nomes dos microfones aparecem depois do primeiro teste (o Android pede permiss\xE3o).</p>'}
+    <div class="label">Teste</div>
+    <div style="padding:0 18px"><div class="meter"><i id="audlvl"></i></div>
+    <div class="two" style="margin-top:12px"><button class="btn ${jmMic ? "" : "ghost"}" data-act="audTest" style="margin:0">${x("mic", "sm")}&nbsp;${jmMic ? "Parar teste" : "Testar microfone"}</button><button class="btn ghost" data-act="audEcho" style="margin:0" ${jmMic ? "" : "disabled"}>${x("volume", "sm")}&nbsp;${jmMic && jmMic.audio ? "Parar de me ouvir" : "Ouvir minha voz"}</button></div>
+    <p class="note" style="padding:8px 0 0" id="audmsg">Fale algo: a barra deve se mexer. Para se ouvir, use fone.</p></div>
+    <div class="label">Processamento da voz</div>
+    ${le({ i: "wave", n: "Redu\xE7\xE3o de ru\xEDdo", s: "Diminui barulho de fundo", act: "audTgl", data: 'data-k="ns"', sw: jmAudio.ns })}
+    ${le({ i: "volume", n: "Cancelamento de eco", s: "Evita que o outro lado se ou\xE7a pelo seu alto-falante", act: "audTgl", data: 'data-k="ec"', sw: jmAudio.ec })}
+    ${le({ i: "sliders", n: "Ajuste autom\xE1tico de volume", s: "Equilibra voz baixa e alta", act: "audTgl", data: 'data-k="agc"', sw: jmAudio.agc })}
+    <p class="note">Valem para as pr\xF3ximas chamadas e salas de voz. Se o outro lado n\xE3o te ouve: teste aqui, escolha outro microfone e confira a permiss\xE3o de microfone do app.</p>
+    ${le({ i: "sliders", n: "Permiss\xF5es do app no Android", s: "Microfone, c\xE2mera e notifica\xE7\xF5es", act: "appSettings" })}
+    <div style="height:40px"></div>`;
+  }
+  b("openAudio", () => {
+    J.open(
+      "audio",
+      `<div class="sc-top"><div class="subhead"><button class="ibtn" data-act="back" aria-label="Voltar">${x("back")}</button><h2>Voz e \xE1udio</h2></div><div class="scroll" id="audbody"></div></div>`,
+      { onClose: jmMicStop },
+    ),
+      jmAudioPage();
+  });
+  b("audDev", async (t) => {
+    (jmAudio.deviceId = t.dataset.id || ""), await jmAudioSave(), jmMic && (jmMicStop(), await vt.audTest()), jmAudioPage();
+  });
+  b("audTgl", async (t) => {
+    let e = t.dataset.k;
+    (jmAudio[e] = !jmAudio[e]), await jmAudioSave(), jmAudioPage();
+  });
+  b("audTest", async () => {
+    if (jmMic) {
+      jmMicStop(), jmAudioPage();
+      return;
+    }
+    try {
+      let t = await navigator.mediaDevices.getUserMedia({ audio: { ...$i } }),
+        e = new AudioContext(),
+        a = e.createAnalyser();
+      (a.fftSize = 512), e.createMediaStreamSource(t).connect(a);
+      let n = new Uint8Array(a.fftSize);
+      jmMic = { stream: t, ctx: e, raf: 0, audio: null };
+      let s = () => {
+        if (!jmMic) return;
+        a.getByteTimeDomainData(n);
+        let o = 0;
+        for (let i of n) o = Math.max(o, Math.abs(i - 128));
+        let r = y("#audlvl");
+        r && (r.style.width = Math.min(100, (o / 128) * 160).toFixed(0) + "%"), (jmMic.raf = requestAnimationFrame(s));
+      };
+      s(), await jmAudioPage();
+    } catch (t) {
+      jmMic = null;
+      let e = y("#audmsg");
+      e && ((e.textContent = ze(t)), e.classList.add("errtx"));
+    }
+  });
+  b("audEcho", () => {
+    if (jmMic) {
+      if (jmMic.audio) (jmMic.audio.srcObject = null), (jmMic.audio = null);
+      else {
+        let t = new Audio();
+        (t.srcObject = jmMic.stream), t.play().catch(() => {}), (jmMic.audio = t);
+      }
+      jmAudioPage();
+    }
+  });
   b("appSettings", () => X.appSettings());
   b("openAppearance", () => {
     J.open(
@@ -19683,6 +20284,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     });
   }
   function Z0(t) {
+    jmSpotifyInit(t), jmAudioInit(t);
     t.on("msg", (e, a) => {
       Iu(e, a),
         a.kind === "invite" &&
@@ -19719,6 +20321,11 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         a &&
           a.key === e &&
           (J.popTo("chat"), J.pop(), _("Este canal foi apagado por um admin."));
+      }),
+      t.on("listening", (e) => {
+        C && C.chat && C.chat.pk === e && sn();
+        let a = J.find("profile");
+        a && a.el && a.el.dataset.pk === e && jmRefreshProfile(e);
       }),
       t.on("typing", (e) => {
         h.typing.set(e, Date.now() + 6e3),
@@ -19834,6 +20441,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         ? (wf(), e.wake(), a && X.cancelNotify(a.key))
         : (h.hiddenAt = Date.now());
   }
+  // Só nos testes em localhost (nunca no APK, que roda em appassets.androidplatform.net).
+  /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && Object.defineProperty(window, "__jm", { get: () => h, configurable: !0 });
   window.JM = {
     onBack: () => {
       try {
@@ -19852,6 +20461,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     },
     onLink: (t) => Bf(t),
     onCallAction: (t) => bf(t),
+    onSpotify: (t) => jmSpotifyFrom(t),
     onResume: () => {
       h.engine && h.engine.wake();
     },

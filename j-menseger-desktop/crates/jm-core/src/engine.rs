@@ -2028,6 +2028,10 @@ impl Engine {
             let ban = AppMessage::ProfileBanner { b: b.clone() };
             self.send_app(&chat, &ban, BuildOpts { no_self_copy: true, no_ttl: true, ..Default::default() }).await?;
         }
+        // Quem acabou de virar contato já vê o que está tocando.
+        if let Some(l) = self.my_listening() {
+            let _ = self.send_app(&chat, &AppMessage::Listening(l), BuildOpts { ephemeral: true, no_ttl: true, no_self_copy: true, ..Default::default() }).await;
+        }
         let snap = {
             let mut st = self.state.lock().unwrap();
             st.contacts.get_mut(pk).filter(|c| !c.prof_sent).map(|c| {

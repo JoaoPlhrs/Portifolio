@@ -31,3 +31,19 @@ ambiente onde foi escrito. Esta pasta foi **reconstruída a partir do APK
 
 A chave de assinatura fica em `keystore/` (fora do git). **Guarde-a**: sem ela
 não dá para lançar atualizações que instalem por cima.
+
+## Novidades da 0.5.0-beta (iguais às do computador)
+
+Mesmo protocolo do app de computador, conferido com ele rodando de verdade no
+servidor de teste: código curto (evento kind 30078), banner (`pban`), jogos
+favoritos (`g` no perfil), "ouvindo agora" (`lis`, efêmero, só contatos
+aceitos), GIF (`image/gif`, busca no GIPHY com a chave do app), ajustes de
+microfone, tela do PC inteira nas chamadas e o teclado que não fecha ao
+enviar. Ver `GUIA-DO-TESTADOR.md`.
+
+**Testado aqui:** a página no Chromium em tamanho de celular conversando com
+o app de computador (código curto nos dois sentidos, banner, jogos, GIF,
+música do Spotify, chamada com a tela do PC). **Não testado:** a camada
+Android reescrita (Java) num aparelho ou emulador de verdade — não há um
+aqui. O APK foi montado e assinado com as ferramentas oficiais e passou na
+verificação de assinatura.
