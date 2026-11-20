@@ -22,6 +22,7 @@ pub fn view<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
             Popup::Emoji => Some(emoji_popup()),
             Popup::Sounds => Some(sounds_popup(m, false)),
             Popup::Attach => Some(attach_popup()),
+            Popup::Gif => Some(gif_popup(m)),
             Popup::CallSounds => None,
         };
         if let Some(caixa) = caixa {
@@ -365,6 +366,16 @@ fn fit(w: Option<u32>, h: Option<u32>, max_w: f32, max_h: f32) -> (f32, f32) {
 
 fn photo<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, x: &'a jm_core::media::MediaInfo) -> El<'a> {
     let (w, h) = fit(x.w, x.h, 320.0, 340.0);
+    if x.ready && is_gif_mime(&x.mime) {
+        if let Some(hd) = m.anim_frame(&x.mid).or_else(|| m.media_image(&x.mid)) {
+            let selo = container(container(text("GIF").size(10.5).font(BOLD).color(Color::WHITE)).padding([2, 6]).style(t::rounded(t::with_alpha(Color::BLACK, 0.6), 5.0)))
+                .padding(7);
+            return mouse_area(stack![image(hd).width(w).height(h).content_fit(ContentFit::Cover).border_radius(10.0), selo].width(w).height(h))
+                .on_press(Msg::OpenViewer(x.mid.clone()))
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into();
+        }
+    }
     if x.ready {
         if let Some(hd) = m.media_image(&x.mid) {
             return mouse_area(image(hd).width(w).height(h).content_fit(ContentFit::Cover).border_radius(10.0))
@@ -600,6 +611,7 @@ fn composer<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
         row![
             ui::icon_button(Icon::Plus, "Anexar", Some(Msg::SetPopup(Some(Popup::Attach))), m.popup == Some(Popup::Attach)),
             ui::icon_button(Icon::Smile, "Emojis", Some(Msg::SetPopup(Some(Popup::Emoji))), m.popup == Some(Popup::Emoji)),
+            gif_button(m.popup == Some(Popup::Gif)),
             editor,
             ui::icon_button(Icon::Wave, "Soundboard", Some(Msg::SetPopup(Some(Popup::Sounds))), m.popup == Some(Popup::Sounds)),
             enviar,
@@ -641,10 +653,123 @@ fn emoji_popup<'a>() -> El<'a> {
     .into()
 }
 
+fn gif_button<'a>(aberto: bool) -> El<'a> {
+    let cor = if aberto { t::accent() } else { t::FG_DIM };
+    ui::tip(
+        button(
+            container(text("GIF").size(10.5).font(BOLD).color(cor))
+                .padding([2, 4])
+                .style(move |_| iced::widget::container::Style {
+                    border: iced::Border { color: cor, width: 1.6, radius: 4.0.into() },
+                    ..Default::default()
+                }),
+        )
+        .padding([10, 6])
+        .style(t::ghost)
+        .on_press(Msg::SetPopup(Some(Popup::Gif))),
+        "GIFs",
+        tooltip::Position::Top,
+    )
+}
+
+/// Busca de GIFs, no jeito do Discord: campo em cima, grade animada.
+fn gif_popup<'a>(m: &'a Main) -> El<'a> {
+    let g = &m.gif;
+    let servico = m.gif_keys.usable().map(|x| x.0);
+    let fechar = ui::icon_button_sm(Icon::X, "Fechar", Some(Msg::SetPopup(None)));
+    let largura = 452.0;
+    let do_pc = ui::ghost(Some(Icon::Upload), "GIF do computador", Some(Msg::GifFromFile));
+    let Some(p) = servico else {
+        return container(
+            column![
+                row![text("GIFs").size(13).font(BOLD).color(t::FG_DIM), ui::fill(), fechar].align_y(Alignment::Center),
+                container(
+                    column![
+                        icon(Icon::Image, 34.0, t::accent()),
+                        text("Busca de GIFs desligada").size(15).font(BOLD).color(t::FG),
+                        text("Coloque uma chave do Tenor ou do GIPHY nos ajustes para buscar GIFs aqui.").size(13).color(t::FG_DIM).align_x(Alignment::Center),
+                        ui::primary(Some(Icon::Settings), "Colocar chave", Some(Msg::OpenSettingsPage(SettingsPage::Gifs))),
+                        do_pc,
+                    ]
+                    .spacing(10)
+                    .align_x(Alignment::Center),
+                )
+                .center_x(Length::Fill)
+                .padding([26, 10]),
+            ]
+            .spacing(6),
+        )
+        .padding(10)
+        .width(largura)
+        .style(t::panel)
+        .into();
+    };
+    let busca = iced::widget::text_input(&format!("Buscar no {}", p.label()), &g.query)
+        .id(crate::update::GIF_INPUT_ID)
+        .on_input(Msg::GifQuery)
+        .padding([9, 12])
+        .size(14)
+        .style(t::input);
+    let corpo: El<'a> = if let Some(e) = &g.error {
+        container(text(e.clone()).size(13).color(t::DANGER)).center_x(Length::Fill).padding(30).into()
+    } else if g.hits.is_empty() {
+        let msg = if g.loading { "Buscando…" } else if g.query.trim().is_empty() { "" } else { "Nenhum GIF encontrado." };
+        container(text(msg).size(13).color(t::FG_DIM)).center_x(Length::Fill).padding(30).into()
+    } else {
+        let lado = (largura - 20.0 - 8.0 - 12.0) / 2.0;
+        let cols: Vec<El<'a>> = (0..2)
+            .map(|c| {
+                column(g.hits.iter().enumerate().filter(|(i, _)| i % 2 == c).map(|(i, h)| {
+                    let alt = if h.w > 0 && h.h > 0 { (lado * h.h as f32 / h.w as f32).clamp(70.0, 220.0) } else { 120.0 };
+                    let fundo: El<'a> = match m.anim_frame(&h.preview) {
+                        Some(f) => image(f).width(lado).height(alt).content_fit(ContentFit::Cover).border_radius(8.0).into(),
+                        None => container(Space::new()).width(lado).height(alt).style(t::rounded(t::surface_hi(), 8.0)).into(),
+                    };
+                    let mut camadas = vec![fundo];
+                    if g.sending.as_deref() == Some(h.id.as_str()) {
+                        camadas.push(
+                            container(container(text("Enviando…").size(12).color(Color::WHITE)).padding([4, 10]).style(t::rounded(t::with_alpha(Color::BLACK, 0.65), 999.0)))
+                                .center(Length::Fill)
+                                .into(),
+                        );
+                    }
+                    ui::tip(
+                        button(stack(camadas).width(lado).height(alt)).padding(0).style(t::ghost).on_press_maybe(g.sending.is_none().then_some(Msg::GifPick(i))),
+                        if h.title.is_empty() { "Mandar".to_string() } else { ui::ellipsis(&h.title, 40) },
+                        tooltip::Position::Top,
+                    )
+                }))
+                .spacing(8)
+                .into()
+            })
+            .collect();
+        scrollable(container(row(cols).spacing(8)).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill).style(t::scroll).into()
+    };
+    let titulo = if g.query.trim().is_empty() { "Em alta" } else { "Resultados" };
+    let creditos = match g.from.unwrap_or(p) {
+        crate::gifs::Provider::Tenor => "Via Tenor",
+        crate::gifs::Provider::Giphy => "Powered by GIPHY",
+    };
+    container(
+        column![
+            row![busca, fechar].spacing(6).align_y(Alignment::Center),
+            text(titulo).size(12).font(SEMI).color(t::FG_DIM),
+            container(corpo).height(340),
+            row![do_pc, ui::fill(), text(creditos).size(11.5).color(t::FG_FAINT)].align_y(Alignment::Center),
+        ]
+        .spacing(8),
+    )
+    .padding(10)
+    .width(largura)
+    .style(t::panel)
+    .into()
+}
+
 fn attach_popup<'a>() -> El<'a> {
     container(
         column![
             ui::menu_item(Icon::Image, "Foto do computador", Msg::PickPhoto, false),
+            ui::menu_item(Icon::Image, "GIF", Msg::SetPopup(Some(Popup::Gif)), false),
             ui::menu_item(Icon::Wave, "Som do soundboard", Msg::SetPopup(Some(Popup::Sounds)), false),
         ]
         .spacing(2),

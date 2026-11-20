@@ -42,6 +42,47 @@ pub enum SettingsPage {
     Storage,
     About,
     Audio,
+    Gifs,
+}
+
+/// GIF aberto em quadros, pronto para animar na tela.
+pub struct Anim {
+    pub frames: Vec<(image::Handle, u32)>,
+    pub total: u32,
+}
+
+impl Anim {
+    pub fn decode(bytes: &[u8], max_side: u32) -> Option<std::sync::Arc<Anim>> {
+        let q = jm_media::gif::frames(bytes, max_side).ok()?;
+        let frames: Vec<(image::Handle, u32)> = q.into_iter().map(|f| (image::Handle::from_rgba(f.w, f.h, f.rgba), f.delay_ms)).collect();
+        let total = frames.iter().map(|f| f.1).sum::<u32>().max(1);
+        Some(std::sync::Arc::new(Anim { frames, total }))
+    }
+
+    pub fn at(&self, ms: u128) -> image::Handle {
+        let mut t = (ms % self.total as u128) as u32;
+        for (h, d) in &self.frames {
+            if t < *d {
+                return h.clone();
+            }
+            t -= d;
+        }
+        self.frames[0].0.clone()
+    }
+}
+
+/// Janelinha de GIFs da conversa.
+#[derive(Default)]
+pub struct GifPicker {
+    pub query: String,
+    pub hits: Vec<crate::gifs::Hit>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub seq: u64,
+    /// GIF que está sendo baixado para mandar.
+    pub sending: Option<String>,
+    /// Serviço dos resultados mostrados.
+    pub from: Option<crate::gifs::Provider>,
 }
 
 /// Ajustes de voz e áudio (gravados só neste computador).
@@ -184,6 +225,7 @@ pub enum Popup {
     Sounds,
     Attach,
     CallSounds,
+    Gif,
 }
 
 /// Para que o teclado de PIN está aberto.
@@ -479,6 +521,15 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    pub gif_keys: crate::gifs::GifKeys,
+    pub gif: GifPicker,
+    pub gif_show_keys: bool,
+    pub gif_testing: bool,
+    pub gif_test: Option<Result<usize, String>>,
+    /// GIFs já abertos em quadros (por mídia ou endereço da prévia).
+    pub anims: HashMap<String, std::sync::Arc<Anim>>,
+    pub anim_loading: std::collections::HashSet<String>,
+    pub anim_clock: Instant,
     /// Chamada ou sala em tela cheia (palco no estilo Discord).
     pub call_full: bool,
     pub audio: AudioSettings,
@@ -568,6 +619,14 @@ impl Main {
             chats_dirty: false,
             qr: None,
             call_full: false,
+            gif_keys: Default::default(),
+            gif: GifPicker::default(),
+            gif_show_keys: false,
+            gif_testing: false,
+            gif_test: None,
+            anims: HashMap::new(),
+            anim_loading: Default::default(),
+            anim_clock: Instant::now(),
             audio: AudioSettings::default(),
             audio_inputs: Vec::new(),
             audio_outputs: Vec::new(),
@@ -583,6 +642,7 @@ impl Main {
         m.refresh_qr();
         m.short_code = m.engine.short_code();
         m.audio = m.engine.ui_pref("audio").unwrap_or_default();
+        m.gif_keys = m.engine.ui_pref("gifs").unwrap_or_default();
         let e = Arc::clone(&m.engine);
         let task = Task::batch([
             iced::window::oldest().map(Msg::WindowId),
@@ -626,6 +686,8 @@ impl Main {
             || self.mic_test.is_some()
         {
             Duration::from_millis(80)
+        } else if self.animating() {
+            Duration::from_millis(60)
         } else if self.toast.is_some() || self.lock.as_ref().is_some_and(|l| l.wait_until.is_some()) {
             Duration::from_millis(500)
         } else {
@@ -641,6 +703,29 @@ impl Main {
 
     pub fn refresh_qr(&mut self) {
         self.qr = iced::widget::qr_code::Data::new(self.invite_link()).ok();
+    }
+
+    /// Há GIF animando na tela (só com a janela em foco).
+    pub fn animating(&self) -> bool {
+        if !self.focused {
+            return false;
+        }
+        match &self.modal {
+            None | Some(Modal::Viewer { .. }) => {}
+            Some(Modal::PhotoPreview(d)) => return is_gif_mime(&d.mime) && self.anims.contains_key(PREVIA_GIF),
+            Some(_) => return false,
+        }
+        if self.popup == Some(Popup::Gif) && !self.gif.hits.is_empty() {
+            return true;
+        }
+        self.chat.as_ref().is_some_and(|c| {
+            c.messages.iter().rev().take(40).any(|m| matches!(&m.body, jm_core::engine::MessageBody::Media(x) if is_gif_mime(&x.mime) && self.anims.contains_key(&x.mid)))
+        })
+    }
+
+    /// Quadro atual de um GIF já aberto.
+    pub fn anim_frame(&self, key: &str) -> Option<image::Handle> {
+        self.anims.get(key).map(|a| a.at(self.anim_clock.elapsed().as_millis()))
     }
 
     /// Está numa chamada atendida ou numa sala de voz.
@@ -817,4 +902,11 @@ fn hash(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+/// Chave do GIF aberto na prévia antes de mandar.
+pub const PREVIA_GIF: &str = "__previa_gif__";
+
+pub fn is_gif_mime(m: &str) -> bool {
+    m.to_ascii_lowercase().starts_with("image/gif")
 }

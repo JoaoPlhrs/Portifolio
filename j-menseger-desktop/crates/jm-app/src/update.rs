@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const EDITOR_ID: &str = "composer";
+pub const GIF_INPUT_ID: &str = "gif-busca";
 pub const MESSAGES_ID: &str = "messages";
 
 /// Limite de uma mensagem de voz (cabe com folga no tamanho máximo de mídia).
@@ -96,6 +97,66 @@ impl Main {
         if let Err(e) = self.engine.set_ui_pref("look", &self.look) {
             tracing::warn!("aparência não salva: {e}");
         }
+    }
+
+    /// Manda uma foto ou GIF já preparado na conversa aberta.
+    fn send_draft(&mut self, d: PhotoDraft) -> Task<Msg> {
+        let Some(key) = self.open_key() else { return Task::none() };
+        let e = self.eng();
+        let meta = MediaMeta {
+            kind: Some(MediaKind::Image),
+            mime: d.mime.clone(),
+            w: Some(d.w),
+            h: Some(d.h),
+            th: Some(d.th.clone()),
+            ..Default::default()
+        };
+        done(async move { e.send_media(&key, d.bytes.to_vec(), meta).await.map(|_| ()).map_err(s) })
+    }
+
+    fn gif_changed(&mut self) {
+        self.gif_test = None;
+        self.gif.hits.clear();
+        self.gif.error = None;
+        self.gif.from = None;
+        if let Err(e) = self.engine.set_ui_pref("gifs", &self.gif_keys) {
+            tracing::warn!("chaves de GIF não salvas: {e}");
+        }
+    }
+
+    fn gif_search(&mut self) -> Task<Msg> {
+        let Some((p, k)) = self.gif_keys.usable() else { return Task::none() };
+        self.gif.seq += 1;
+        let seq = self.gif.seq;
+        self.gif.loading = true;
+        let q = self.gif.query.clone();
+        Task::perform(
+            async move { tokio::task::spawn_blocking(move || crate::gifs::search(p, &k, &q)).await.map_err(|e| e.to_string()).and_then(|r| r) },
+            move |r| Msg::GifResults(seq, p, r),
+        )
+    }
+
+    fn anim_from_url(&mut self, url: String) -> Task<Msg> {
+        if self.anims.contains_key(&url) || !self.anim_loading.insert(url.clone()) {
+            return Task::none();
+        }
+        let k = url.clone();
+        Task::perform(
+            async move { tokio::task::spawn_blocking(move || crate::gifs::download_preview(&url).ok().and_then(|b| Anim::decode(&b, 240))).await.ok().flatten() },
+            move |a| Msg::AnimReady(k.clone(), a),
+        )
+    }
+
+    fn anim_from_media(&mut self, mid: String) -> Task<Msg> {
+        if !self.anim_loading.insert(mid.clone()) {
+            return Task::none();
+        }
+        let e = self.eng();
+        let k = mid.clone();
+        Task::perform(
+            async move { tokio::task::spawn_blocking(move || e.media_bytes(&mid).and_then(|b| Anim::decode(&b, 640))).await.ok().flatten() },
+            move |a| Msg::AnimReady(k.clone(), a),
+        )
     }
 
     fn save_audio(&mut self) {
@@ -197,7 +258,33 @@ impl Main {
                 self.close_overlays();
                 Task::none()
             }
-            Msg::TestHook => test_hook(),
+            Msg::TestHook => {
+                // Só no modo de teste: enche a grade de GIFs com um GIF local
+                // para conferir o desenho sem chave de API.
+                if cfg!(debug_assertions) && std::env::var("J_MENSEGER_TESTE_ALVO").as_deref() == Ok("gifgrade") {
+                    if let Some(b) = std::env::var("J_MENSEGER_TESTE_ARQUIVO").ok().and_then(|p| std::fs::read(p).ok()) {
+                        if let Some(a) = Anim::decode(&b, 240) {
+                            self.gif.hits = (0..8)
+                                .map(|i| crate::gifs::Hit {
+                                    id: format!("t{i}"),
+                                    title: format!("Teste {i}"),
+                                    preview: format!("teste:{i}"),
+                                    send: String::new(),
+                                    w: 240,
+                                    h: if i % 3 == 0 { 240 } else { 160 },
+                                })
+                                .collect();
+                            for i in 0..8 {
+                                self.anims.insert(format!("teste:{i}"), Arc::clone(&a));
+                            }
+                            self.gif.error = None;
+                            self.gif.from = Some(crate::gifs::Provider::Giphy);
+                        }
+                    }
+                    return Task::none();
+                }
+                test_hook()
+            }
             Msg::Focus(f) => {
                 self.focused = f;
                 if !f {
@@ -391,6 +478,10 @@ impl Main {
             Msg::SetPopup(p) => {
                 self.menu = None;
                 self.popup = if self.popup == p { None } else { p };
+                if self.popup == Some(Popup::Gif) {
+                    let busca = if self.gif.hits.is_empty() && !self.gif.loading { self.gif_search() } else { Task::none() };
+                    return Task::batch([busca, iced::widget::operation::focus(GIF_INPUT_ID)]);
+                }
                 Task::none()
             }
             Msg::Reply(id) => {
@@ -413,7 +504,17 @@ impl Main {
             }
             Msg::PhotoPicked(r) => {
                 match r {
-                    Ok(Some(d)) if self.chat.is_some() => self.modal = Some(Modal::PhotoPreview(d)),
+                    Ok(Some(d)) if self.chat.is_some() => {
+                        self.anims.remove(PREVIA_GIF);
+                        let gif = is_gif_mime(&d.mime).then(|| Arc::clone(&d.bytes));
+                        self.modal = Some(Modal::PhotoPreview(d));
+                        if let Some(b) = gif {
+                            return Task::perform(
+                                async move { tokio::task::spawn_blocking(move || Anim::decode(&b, 640)).await.ok().flatten() },
+                                |a| Msg::AnimReady(PREVIA_GIF.to_string(), a),
+                            );
+                        }
+                    }
                     Ok(_) => {}
                     Err(e) => self.toast(e),
                 }
@@ -421,17 +522,132 @@ impl Main {
             }
             Msg::SendPhoto => {
                 let Some(Modal::PhotoPreview(d)) = self.modal.take() else { return Task::none() };
-                let Some(key) = self.open_key() else { return Task::none() };
-                let e = self.eng();
-                let meta = MediaMeta {
-                    kind: Some(MediaKind::Image),
-                    mime: d.mime.clone(),
-                    w: Some(d.w),
-                    h: Some(d.h),
-                    th: Some(d.th.clone()),
-                    ..Default::default()
+                self.send_draft(d)
+            }
+            Msg::GifTenorKey(v) => {
+                self.gif_keys.tenor = v.trim().to_string();
+                self.gif_changed();
+                Task::none()
+            }
+            Msg::GifGiphyKey(v) => {
+                self.gif_keys.giphy = v.trim().to_string();
+                self.gif_changed();
+                Task::none()
+            }
+            Msg::GifProviderSet(p) => {
+                self.gif_keys.provider = p;
+                self.gif_changed();
+                Task::none()
+            }
+            Msg::GifShowKeys => {
+                self.gif_show_keys = !self.gif_show_keys;
+                Task::none()
+            }
+            Msg::GifTest => {
+                let Some((p, k)) = self.gif_keys.usable() else {
+                    self.gif_test = Some(Err("Coloque uma chave primeiro.".into()));
+                    return Task::none();
                 };
-                done(async move { e.send_media(&key, d.bytes.to_vec(), meta).await.map(|_| ()).map_err(s) })
+                self.gif_testing = true;
+                self.gif_test = None;
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(move || crate::gifs::search(p, &k, "oi").map(|v| v.len())).await.map_err(|e| e.to_string()).and_then(|r| r) },
+                    Msg::GifTestDone,
+                )
+            }
+            Msg::GifTestDone(r) => {
+                self.gif_testing = false;
+                self.gif_test = Some(r);
+                Task::none()
+            }
+            Msg::GifQuery(q) => {
+                self.gif.query = q;
+                self.gif.seq += 1;
+                let seq = self.gif.seq;
+                Task::perform(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        seq
+                    },
+                    Msg::GifSearchNow,
+                )
+            }
+            Msg::GifSearchNow(seq) => {
+                if seq != self.gif.seq {
+                    return Task::none();
+                }
+                self.gif_search()
+            }
+            Msg::GifResults(seq, de, r) => {
+                if seq != self.gif.seq {
+                    return Task::none();
+                }
+                self.gif.loading = false;
+                match r {
+                    Ok(hits) => {
+                        self.gif.error = None;
+                        self.gif.from = Some(de);
+                        let urls: Vec<String> = hits.iter().map(|h| h.preview.clone()).collect();
+                        self.gif.hits = hits;
+                        Task::batch(urls.into_iter().map(|u| self.anim_from_url(u)))
+                    }
+                    Err(e) => {
+                        self.gif.error = Some(e);
+                        Task::none()
+                    }
+                }
+            }
+            Msg::GifPick(i) => {
+                let Some(h) = self.gif.hits.get(i).cloned() else { return Task::none() };
+                if self.gif.sending.is_some() || self.chat.is_none() {
+                    return Task::none();
+                }
+                self.gif.sending = Some(h.id.clone());
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let b = crate::gifs::download(&h.send, jm_media::gif::GIF_MAX)?;
+                            platform::gif_draft(b)
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r)
+                    },
+                    Msg::GifDownloaded,
+                )
+            }
+            Msg::GifDownloaded(r) => {
+                self.gif.sending = None;
+                match r {
+                    Ok(d) => {
+                        self.popup = None;
+                        self.send_draft(d)
+                    }
+                    Err(e) => {
+                        self.toast(e);
+                        Task::none()
+                    }
+                }
+            }
+            Msg::GifFromFile => {
+                self.close_overlays();
+                Task::perform(platform::pick_gif(), Msg::PhotoPicked)
+            }
+            Msg::OpenSettingsPage(p) => {
+                self.close_overlays();
+                self.modal = None;
+                Task::done(Msg::Go(Section::Settings)).chain(Task::done(Msg::Page(p)))
+            }
+            Msg::AnimReady(k, a) => {
+                self.anim_loading.remove(&k);
+                if let Some(a) = a {
+                    // Guarda poucos: cada GIF aberto ocupa memória.
+                    if self.anims.len() > 160 {
+                        self.anims.clear();
+                    }
+                    self.anims.insert(k, a);
+                }
+                Task::none()
             }
             Msg::SendSound(id) => {
                 self.popup = None;
@@ -2347,6 +2563,26 @@ impl Main {
         if self.call_full && !self.in_voice() {
             // A chamada acabou: volta para a janela normal.
             tarefas.push(Task::done(Msg::CallFull(false)));
+        }
+        if self.focused {
+            let faltando: Vec<String> = self
+                .chat
+                .as_ref()
+                .map(|c| {
+                    c.messages
+                        .iter()
+                        .rev()
+                        .take(40)
+                        .filter_map(|m| match &m.body {
+                            MessageBody::Media(x) if x.ready && is_gif_mime(&x.mime) && !self.anims.contains_key(&x.mid) && !self.anim_loading.contains(&x.mid) => Some(x.mid.clone()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for mid in faltando {
+                tarefas.push(self.anim_from_media(mid));
+            }
         }
         if let Some(t) = &mut self.mic_test {
             while let Ok(q) = t.rx.try_recv() {

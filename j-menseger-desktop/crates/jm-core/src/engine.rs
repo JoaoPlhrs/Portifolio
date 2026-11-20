@@ -1368,6 +1368,7 @@ impl Engine {
             MessageBody::Media(md) => match (&md.sb, md.kind) {
                 (Some(sb), _) => format!("Som: {}", sb.n),
                 (None, MediaKind::Audio) => "Mensagem de voz".into(),
+                (None, MediaKind::Image) if md.mime.to_ascii_lowercase().starts_with("image/gif") => "GIF".into(),
                 (None, MediaKind::Image) => "Foto".into(),
             },
             MessageBody::Sound { .. } => "Som do soundboard".into(),

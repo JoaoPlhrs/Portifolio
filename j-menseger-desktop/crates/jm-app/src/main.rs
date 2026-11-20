@@ -13,6 +13,7 @@ mod app;
 mod bridge;
 mod calls;
 mod canvas;
+mod gifs;
 mod icons;
 mod platform;
 mod sounds;

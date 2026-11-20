@@ -106,8 +106,12 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         Modal::PhotoPreview(d) => card(
             520.0,
             column![
-                head("Mandar foto", Some("A foto foi reduzida e perdeu os metadados (como localização) antes de sair.")),
-                container(image(d.handle.clone()).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fixed((m.size.height - 320.0).clamp(160.0, 420.0))))
+                if is_gif_mime(&d.mime) {
+                    head("Mandar GIF", Some("O GIF vai do jeito que está, animado e cifrado como uma foto."))
+                } else {
+                    head("Mandar foto", Some("A foto foi reduzida e perdeu os metadados (como localização) antes de sair."))
+                },
+                container(image(m.anim_frame(PREVIA_GIF).filter(|_| is_gif_mime(&d.mime)).unwrap_or_else(|| d.handle.clone())).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fixed((m.size.height - 320.0).clamp(160.0, 420.0))))
                     .style(t::rounded(Color::BLACK, 10.0)),
                 text(format!("{}×{} · {}", d.w, d.h, t::bytes_label(d.bytes.len() as i64))).size(12.5).color(t::FG_DIM),
                 row![ui::fill(), ui::ghost(None, "Cancelar", Some(Msg::Key(Key::Escape))), ui::primary(Some(Icon::Send), "Enviar", Some(Msg::SendPhoto))].spacing(8),
@@ -709,7 +713,7 @@ pub fn lock_screen<'a>(_m: &'a Main, l: &'a LockState) -> El<'a> {
 /* ------------------------------------------------------------ fotos */
 
 fn viewer<'a>(m: &'a Main, mid: &'a str) -> El<'a> {
-    let img: El<'a> = match m.media_image(mid) {
+    let img: El<'a> = match m.anim_frame(mid).or_else(|| m.media_image(mid)) {
         Some(h) => image(h).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fill).into(),
         None => ui::note("A foto não está mais neste computador."),
     };

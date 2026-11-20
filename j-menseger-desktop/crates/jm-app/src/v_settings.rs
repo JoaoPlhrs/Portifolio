@@ -34,6 +34,7 @@ pub fn sidebar(m: &Main) -> El<'_> {
         item(SettingsPage::Soundboard, Icon::Wave, "Soundboard", false),
         item(SettingsPage::Network, Icon::Server, "Rede e servidores", false),
         item(SettingsPage::Audio, Icon::Mic, "Voz e áudio", false),
+        item(SettingsPage::Gifs, Icon::Image, "GIFs", false),
         item(SettingsPage::Storage, Icon::Db, "Armazenamento", false),
         rotulo("Sobre"),
         item(SettingsPage::About, Icon::Sparkle, "Sobre o J-Menseger", false),
@@ -84,6 +85,7 @@ pub fn page(m: &Main) -> El<'_> {
         SettingsPage::Storage => storage(m),
         SettingsPage::About => about(m),
         SettingsPage::Audio => audio(m),
+        SettingsPage::Gifs => gifs(m),
     }
 }
 
@@ -793,6 +795,71 @@ fn audio(m: &Main) -> El<'_> {
                 bullet("Escolha o microfone pelo nome aqui em cima em vez de \"Padrão do sistema\" (o padrão às vezes é a webcam ou um dispositivo desligado)."),
                 bullet("Se outro programa (Discord, OBS, jogo) estiver com o microfone em modo exclusivo, feche-o e teste de novo."),
                 bullet("Se as barras sobem mas o outro lado não ouve, aumente o volume do microfone."),
+            ]
+            .spacing(6)
+            .into(),
+        ],
+    )
+}
+
+/* ------------------------------------------------------------ GIFs */
+
+fn gifs(m: &Main) -> El<'_> {
+    use crate::gifs::Provider;
+    let k = &m.gif_keys;
+    let escolha = |p: Provider| -> El<'_> {
+        let rotulo = match p {
+            Provider::Tenor => "Tenor",
+            Provider::Giphy => "GIPHY",
+        };
+        if k.provider == p {
+            ui::primary(Some(Icon::Check), rotulo, Some(Msg::GifProviderSet(p))).into()
+        } else {
+            ui::secondary(None, rotulo, Some(Msg::GifProviderSet(p))).into()
+        }
+    };
+    let chave = |valor: &str, f: fn(String) -> Msg, ph: &str| -> El<'_> {
+        ui::input(ph, valor, f).secure(!m.gif_show_keys).width(Length::Fill).into()
+    };
+    let mut teste = row![
+        ui::secondary(Some(Icon::Refresh), if m.gif_testing { "Testando…" } else { "Testar chave" }, (!m.gif_testing).then_some(Msg::GifTest)),
+        ui::ghost(Some(if m.gif_show_keys { Icon::EyeOff } else { Icon::Eye }), if m.gif_show_keys { "Esconder chaves" } else { "Mostrar chaves" }, Some(Msg::GifShowKeys)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    match &m.gif_test {
+        Some(Ok(n)) => {
+            let p = k.usable().map(|x| x.0.label()).unwrap_or("");
+            teste = teste.push(row![icon(Icon::Check, 15.0, t::accent()), text(format!("Funcionou: o {p} devolveu {n} GIFs.")).size(13).color(t::accent())].spacing(6).align_y(Alignment::Center));
+        }
+        Some(Err(e)) => {
+            teste = teste.push(row![icon(Icon::Alert, 15.0, t::DANGER), text(e.clone()).size(13).color(t::DANGER)].spacing(6).align_y(Alignment::Center));
+        }
+        None => {}
+    }
+    frame(
+        "GIFs",
+        Some("Busque GIFs direto na conversa, pelo botão GIF ao lado dos emojis."),
+        vec![
+            ui::label("Serviço de busca"),
+            row![escolha(Provider::Tenor), escolha(Provider::Giphy)].spacing(8).into(),
+            ui::note("Se só um dos dois tiver chave, a busca usa esse."),
+            ui::label("Chave do Tenor"),
+            chave(&k.tenor, Msg::GifTenorKey, "Cole aqui a chave de API do Tenor"),
+            ui::note("No Google Cloud Console: crie um projeto, ative a \"Tenor API\" e crie uma chave em Credenciais."),
+            ui::ghost(Some(Icon::Share), "Como pegar a chave do Tenor", Some(Msg::OpenUrl("https://developers.google.com/tenor/guides/quickstart".into()))).into(),
+            ui::label("Chave do GIPHY"),
+            chave(&k.giphy, Msg::GifGiphyKey, "Cole aqui a chave de API do GIPHY"),
+            ui::note("Em developers.giphy.com: entre, crie um app do tipo API e copie a chave do painel."),
+            ui::ghost(Some(Icon::Share), "Como pegar a chave do GIPHY", Some(Msg::OpenUrl("https://developers.giphy.com/dashboard/".into()))).into(),
+            ui::vspace(4.0),
+            teste.into(),
+            ui::label("Privacidade"),
+            column![
+                bullet("As chaves ficam só neste computador."),
+                bullet("O que você busca vai direto daqui para o Tenor ou o GIPHY, que veem o termo buscado e o seu endereço de internet."),
+                bullet("O GIF escolhido é baixado aqui e enviado cifrado, como uma foto: quem recebe não acessa o Tenor nem o GIPHY."),
+                bullet("Também dá para mandar um GIF do computador, sem chave nenhuma."),
             ]
             .spacing(6)
             .into(),

@@ -28,6 +28,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # Notificações do sistema (Linux via D-Bus, Windows via WinRT).
 notify-rust = "4"
+# Busca de GIFs no Tenor e no Giphy (HTTPS com rustls, o mesmo do resto).
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Esconder a janela das capturas de tela (SetWindowDisplayAffinity).

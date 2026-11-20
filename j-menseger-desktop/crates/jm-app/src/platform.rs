@@ -89,12 +89,31 @@ async fn read_limited(p: &Path, max: u64, msg: &str) -> Result<Vec<u8>, String> 
 pub async fn photo_from_path(p: PathBuf) -> Result<PhotoDraft, String> {
     let bytes = read_limited(&p, MAX_INPUT, "Foto grande demais (até 30 MB).").await?;
     tokio::task::spawn_blocking(move || {
+        // GIF animado vai como GIF (até 2 MB); maior que isso vira foto parada.
+        if jm_media::gif::is_gif(&bytes) && bytes.len() <= jm_media::gif::GIF_MAX {
+            return gif_draft(bytes);
+        }
         let f = jm_media::photo::prepare(&bytes).map_err(|_| "Não consegui abrir essa imagem.".to_string())?;
         let handle = image::Handle::from_bytes(f.bytes.clone());
         Ok(PhotoDraft { bytes: Arc::new(f.bytes), mime: f.mime.to_string(), w: f.w, h: f.h, th: f.th, handle })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// GIF pronto para mandar, sem mexer nos bytes.
+pub fn gif_draft(bytes: Vec<u8>) -> Result<PhotoDraft, String> {
+    let g = jm_media::gif::prepare(bytes).map_err(|e| e.to_string())?;
+    let handle = image::Handle::from_bytes(g.first_png.clone());
+    Ok(PhotoDraft { bytes: Arc::new(g.bytes), mime: "image/gif".into(), w: g.w, h: g.h, th: g.th, handle })
+}
+
+/// Pede um GIF do computador.
+pub async fn pick_gif() -> Result<Option<PhotoDraft>, String> {
+    let Some(f) = rfd::AsyncFileDialog::new().set_title("Escolher GIF").add_filter("GIF", &["gif"]).pick_file().await else {
+        return Ok(None);
+    };
+    photo_from_path(f.path().to_path_buf()).await.map(Some)
 }
 
 /// Pede uma foto ao sistema e prepara para mandar.
@@ -169,7 +188,9 @@ pub async fn pick_audio() -> Result<Option<(String, Arc<Vec<f32>>)>, String> {
 
 /// Salva uma foto recebida onde a pessoa escolher.
 pub async fn save_photo(bytes: Vec<u8>, mime: String) -> Result<String, String> {
-    let ext = if mime.contains("png") {
+    let ext = if mime.contains("gif") {
+        "gif"
+    } else if mime.contains("png") {
         "png"
     } else if mime.contains("webp") {
         "webp"

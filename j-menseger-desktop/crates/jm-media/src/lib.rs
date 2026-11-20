@@ -9,6 +9,7 @@ pub mod audiofile;
 pub mod builtin;
 pub mod codec;
 pub mod container;
+pub mod gif;
 pub mod peer;
 pub mod photo;
 pub mod player;

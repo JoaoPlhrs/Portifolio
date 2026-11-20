@@ -24,7 +24,8 @@ pub fn max_chunks() -> u32 {
 }
 
 /// Formatos aceitos. O celular grava áudio em WebM ou Ogg (Opus), às vezes
-/// MP4; fotos saem em WebP ou JPEG.
+/// MP4; fotos saem em WebP ou JPEG. GIF animado vem do computador (o
+/// celular ainda precisa ser atualizado para aceitar).
 pub fn mime_ok(mime: &str) -> bool {
     let m = mime.to_ascii_lowercase();
     let (base, params) = match m.split_once(';') {
@@ -33,7 +34,7 @@ pub fn mime_ok(mime: &str) -> bool {
     };
     let base_ok = matches!(
         base,
-        "audio/webm" | "audio/ogg" | "audio/mp4" | "audio/mpeg" | "audio/aac" | "image/webp" | "image/jpeg" | "image/png"
+        "audio/webm" | "audio/ogg" | "audio/mp4" | "audio/mpeg" | "audio/aac" | "image/webp" | "image/jpeg" | "image/png" | "image/gif"
     );
     let params_ok = params.is_none_or(|p| {
         p.chars()
@@ -252,7 +253,7 @@ mod tests {
 
     #[test]
     fn aceita_os_formatos_do_celular() {
-        for m in ["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "image/webp", "image/jpeg", "IMAGE/PNG"] {
+        for m in ["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "image/webp", "image/jpeg", "IMAGE/PNG", "image/gif"] {
             assert!(mime_ok(m), "{m}");
         }
         for m in ["video/mp4", "text/html", "image/svg+xml", "audio/webm;<script>"] {
