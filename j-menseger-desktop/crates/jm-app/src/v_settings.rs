@@ -136,7 +136,8 @@ fn my_code(m: &Main) -> El<'_> {
             row![
                 qr,
                 column![
-                    text("Seu código").size(13).font(SEMI).color(t::FG_DIM),
+                    short_code_box(m),
+                    text("Código completo").size(13).font(SEMI).color(t::FG_DIM),
                     container(text(npub.clone()).size(13).wrapping(iced::widget::text::Wrapping::Glyph).color(t::FG)).padding(12).width(Length::Fill).style(t::rounded(t::surface(), 10.0)),
                     row![ui::primary(Some(Icon::Copy), "Copiar código", Some(Msg::CopyMyCode)), ui::secondary(Some(Icon::Share), "Copiar convite", Some(Msg::CopyInvite))].spacing(8),
                     ui::note("Pessoalmente: a pessoa lê o QR com o celular (Adicionar contato → Ler QR). À distância: mande o convite pelo app que preferir."),
@@ -149,6 +150,52 @@ fn my_code(m: &Main) -> El<'_> {
             .into(),
         ],
     )
+}
+
+/// O código curto (8 caracteres, vale 7 dias), ou o botão de gerar.
+pub fn short_code_box(m: &Main) -> El<'_> {
+    match &m.short_code {
+        Some((c, vence)) => {
+            let data = chrono::DateTime::from_timestamp(*vence, 0)
+                .map(|d| d.with_timezone(&chrono::Local).format("%d/%m").to_string())
+                .unwrap_or_default();
+            container(
+                row![
+                    column![
+                        text("Código curto").size(12).font(SEMI).color(t::FG_DIM),
+                        text(c.clone()).size(26).font(iced::Font::MONOSPACE).color(t::FG),
+                        text(format!("Vale até {data}. Quem tiver o app do PC digita em Adicionar contato.")).size(12).color(t::FG_FAINT),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                    ui::primary(Some(Icon::Copy), "Copiar", Some(Msg::CopyShortCode)),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .padding(12)
+            .width(Length::Fill)
+            .style(t::rounded(t::surface_hi(), 12.0))
+            .into()
+        }
+        None => container(
+            row![
+                column![
+                    text("Código curto").size(13).font(SEMI).color(t::FG),
+                    text("8 letras e números no lugar do código longo. Vale 7 dias.").size(12).color(t::FG_DIM)
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                ui::secondary(Some(Icon::Sparkle), if m.short_code_busy { "Gerando…" } else { "Gerar" }, (!m.short_code_busy).then_some(Msg::ShortCodeCreate)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .padding(12)
+        .width(Length::Fill)
+        .style(t::rounded(t::surface_hi(), 12.0))
+        .into(),
+    }
 }
 
 /// O QR do convite, em fundo branco (os leitores precisam do contraste).

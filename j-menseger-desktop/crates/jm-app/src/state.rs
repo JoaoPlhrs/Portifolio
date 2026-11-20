@@ -422,6 +422,9 @@ pub struct Main {
     pub chats_dirty: bool,
     /// QR do convite (refeito quando o nome muda).
     pub qr: Option<iced::widget::qr_code::Data>,
+    /// Código de convite curto e quando vence (segundos).
+    pub short_code: Option<(String, i64)>,
+    pub short_code_busy: bool,
     pics: RefCell<HashMap<u64, Option<image::Handle>>>,
     media: RefCell<HashMap<String, Option<image::Handle>>>,
 }
@@ -498,12 +501,15 @@ impl Main {
             chats_loading: false,
             chats_dirty: false,
             qr: None,
+            short_code: None,
+            short_code_busy: false,
             pics: RefCell::new(HashMap::new()),
             media: RefCell::new(HashMap::new()),
             engine,
         };
         let mut m = m;
         m.refresh_qr();
+        m.short_code = m.engine.short_code();
         let e = Arc::clone(&m.engine);
         let task = Task::batch([
             iced::window::oldest().map(Msg::WindowId),

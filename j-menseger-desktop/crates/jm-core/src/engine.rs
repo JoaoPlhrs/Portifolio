@@ -3186,6 +3186,61 @@ impl Engine {
         Ok(())
     }
 
+    /* ---------------- código de convite curto ---------------- */
+
+    /// O código curto atual e quando vence (segundos), se ainda vale.
+    pub fn short_code(&self) -> Option<(String, i64)> {
+        let c: Option<(String, i64)> = self.store.lock().unwrap().get_kv("short_code").ok().flatten();
+        c.filter(|(_, exp)| *exp > now_secs() + 3600)
+    }
+
+    /// Gera (ou reaproveita) o código curto e publica nos servidores.
+    pub async fn create_short_code(&self) -> Result<(String, i64)> {
+        if let Some(c) = self.short_code() {
+            // Publica de novo: um servidor novo pode não ter o registro.
+            self.publish_short_code(&c.0, c.1).await?;
+            return Ok(c);
+        }
+        let code = crate::shortcode::generate();
+        let exp = now_secs() + crate::shortcode::VALIDADE_DIAS * DAY;
+        self.publish_short_code(&code, exp).await?;
+        self.store.lock().unwrap().set_kv("short_code", &(code.clone(), exp))?;
+        Ok((code, exp))
+    }
+
+    async fn publish_short_code(&self, code: &str, exp: i64) -> Result<()> {
+        let ev = EventBuilder::new(Kind::Custom(crate::shortcode::KIND), "")
+            .tags([Tag::identifier(crate::shortcode::tag(code)), Tag::expiration(Timestamp::from_secs(exp as u64))])
+            .finalize(&self.keys)
+            .map_err(|e| erro(e.to_string()))?;
+        self.pool.publish(&ev).await.map_err(|e| EngineError::Relay(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Descobre de quem é um código curto. Devolve a chave pública (hex).
+    pub async fn resolve_short_code(&self, input: &str) -> Result<String> {
+        let code = crate::shortcode::parse(input).ok_or_else(|| erro("Código inválido."))?;
+        let ident = crate::shortcode::tag(&code);
+        let filtro = Filter::new().kind(Kind::Custom(crate::shortcode::KIND)).identifier(ident.clone());
+        let evs = self.pool.fetch(filtro, std::time::Duration::from_secs(6)).await.map_err(|e| EngineError::Relay(e.to_string()))?;
+        let agora = Timestamp::now();
+        let mut autores: BTreeSet<String> = BTreeSet::new();
+        for ev in evs {
+            if ev.kind != Kind::Custom(crate::shortcode::KIND) || ev.verify().is_err() || ev.is_expired_at(agora) {
+                continue;
+            }
+            if ev.tags.identifier().map(|s| s.to_string()) != Some(ident.clone()) {
+                continue;
+            }
+            autores.insert(ev.pubkey.to_hex());
+        }
+        match autores.len() {
+            0 => Err(erro("Código não encontrado ou vencido. Peça um código novo.")),
+            1 => Ok(autores.into_iter().next().unwrap_or_default()),
+            _ => Err(erro("Esse código está duplicado nos servidores. Peça o código completo (npub1…).")),
+        }
+    }
+
     /// Preferência só da interface (aparência e afins). Fica num espaço de
     /// chaves próprio (`ui.`), separado do que o protocolo usa.
     pub fn ui_pref<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {

@@ -53,7 +53,8 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
             420.0,
             column![
                 head("Meu código", Some("Mostre o QR para alguém ler com o celular, ou copie o código.")),
-                container(crate::v_settings::qr_box(m, 7.0)).center_x(Length::Fill).padding(8),
+                container(crate::v_settings::qr_box(m, 5.0)).center_x(Length::Fill).padding(4),
+                crate::v_settings::short_code_box(m),
                 container(text(m.engine.npub()).size(12.5).wrapping(iced::widget::text::Wrapping::Glyph).color(t::FG_DIM))
                     .padding(10)
                     .width(Length::Fill)
@@ -194,8 +195,8 @@ fn emoji_grid<'a>(atual: &str, on: fn(String) -> Msg) -> El<'a> {
 
 fn add_contact<'a>(code: &'a str, nick: &'a str, error: Option<&'a str>, busy: bool) -> El<'a> {
     let mut c = column![
-        head("Adicionar contato", Some("Cole o código que a pessoa compartilhou (começa com npub1) ou o link de convite.")),
-        row![ui::input("npub1…", code, Msg::AddCode).on_submit(Msg::AddConfirm).width(Length::Fill), ui::secondary(Some(Icon::Copy), "Colar", Some(Msg::AddPaste))].spacing(8),
+        head("Adicionar contato", Some("Digite o código curto (ex.: K7QF-9X2M) ou cole o código completo (npub1…) ou o link de convite.")),
+        row![ui::input("K7QF-9X2M ou npub1…", code, Msg::AddCode).on_submit(Msg::AddConfirm).width(Length::Fill), ui::secondary(Some(Icon::Copy), "Colar", Some(Msg::AddPaste))].spacing(8),
         ui::field("Apelido (opcional)", ui::input("Como você quer ver o nome", nick, Msg::AddNick).on_submit(Msg::AddConfirm)),
     ]
     .spacing(12);

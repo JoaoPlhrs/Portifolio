@@ -221,6 +221,12 @@ impl RelayPool {
     /// Publica um envelope. Devolve quantos servidores confirmaram.
     ///
     /// Basta um aceitar para a mensagem estar entregue à rede.
+    /// Busca eventos guardados nos servidores (uma vez, sem assinatura).
+    pub async fn fetch(&self, filter: Filter, timeout: Duration) -> Result<Vec<Event>, RelayError> {
+        let evs = self.client.fetch_events(filter).timeout(timeout).await.map_err(|e| RelayError::Sdk(e.to_string()))?;
+        Ok(evs.into_iter().collect())
+    }
+
     pub async fn publish(&self, event: &Event) -> Result<usize, RelayError> {
         match self.client.send_event(event).await {
             Ok(out) => {

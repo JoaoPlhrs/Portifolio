@@ -489,3 +489,24 @@ async fn presenca_na_sala_de_voz() {
     .await;
     assert!(saiu.is_some(), "Beto não viu Ana sair da sala");
 }
+
+/// Código de convite curto: Ana publica, Beto (que não a conhece) encontra a
+/// chave dela pelo código e adiciona.
+#[tokio::test(flavor = "multi_thread")]
+async fn codigo_curto_encontra_a_pessoa() {
+    let Some(relay) = TestRelay::start(7841) else { return };
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let (ana, _ra) = cliente("Ana", &relay.url).await;
+    let (beto, _rb) = cliente("Beto", &relay.url).await;
+    let (codigo, vence) = ana.create_short_code().await.expect("publicar código");
+    assert_eq!(codigo.len(), 9);
+    assert!(vence > jm_core::engine::now_secs() + 6 * 86_400);
+    // Mesmo código ao pedir de novo (enquanto vale).
+    assert_eq!(ana.create_short_code().await.unwrap().0, codigo);
+    let digitado = codigo.to_lowercase().replace('-', " ");
+    let pk = beto.resolve_short_code(&digitado).await.expect("achar código");
+    assert_eq!(pk, ana.pk_hex());
+    beto.add_contact(&pk).await.expect("adicionar pela chave achada");
+    // Código que ninguém publicou.
+    assert!(beto.resolve_short_code("ZZZZ-ZZZZ").await.is_err());
+}

@@ -12,6 +12,7 @@ pub mod pin;
 pub mod protocol;
 pub mod relays;
 pub mod safety;
+pub mod shortcode;
 pub mod sounds;
 pub mod store;
 

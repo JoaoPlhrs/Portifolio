@@ -174,6 +174,9 @@ pub enum Msg {
     Block(String),
     Unblock(String),
     CopyMyCode,
+    ShortCodeCreate,
+    ShortCodeReady(Result<(String, i64), String>),
+    CopyShortCode,
     CopyInvite,
 
     /* grupos */

@@ -266,8 +266,9 @@ fn bubble<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, mostrar_nome: 
         MessageBody::System { .. } => Space::new().into(),
     };
     dentro = dentro.push(corpo);
-    dentro = dentro.push(footer(msg, false));
-    container(dentro).padding([8, 11]).max_width(540).style(t::bubble(mine)).into()
+    // O balão acompanha o conteúdo; a hora fica no canto direito de baixo.
+    let balao = column![dentro, footer(msg, false)].spacing(5).align_x(Alignment::End);
+    container(balao).padding([8, 11]).max_width(540).style(t::bubble(mine)).into()
 }
 
 fn rich<'a>(s: &str) -> El<'a> {
@@ -293,7 +294,9 @@ fn footer<'a>(msg: &'a CoreMessage, solto: bool) -> El<'a> {
             r = r.push(crate::v_main::status_icon(st, 14.0));
         }
     }
-    container(r).align_right(Length::Fill).into()
+    // Sem largura "preencher": isso esticava o balão até o máximo mesmo com
+    // mensagem curta. O alinhamento à direita vem da coluna do balão.
+    r.into()
 }
 
 fn snippet(m: &Main, q: &CoreMessage) -> String {

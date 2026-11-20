@@ -659,8 +659,23 @@ impl Main {
                 }
                 let c = code.trim().to_string();
                 match jm_core::identity::parse_pubkey(&c) {
+                    None if jm_core::shortcode::parse(&c).is_some() => {
+                        // Código curto: descobre a chave nos servidores e adiciona.
+                        *busy = true;
+                        let n = nick.clone();
+                        return Task::perform(
+                            async move {
+                                let pk = e.resolve_short_code(&c).await.map_err(s)?;
+                                if pk == me {
+                                    return Err("Esse é o seu próprio código.".to_string());
+                                }
+                                e.add_contact_with(&pk, &n).await.map(|c| c.pk).map_err(s)
+                            },
+                            Msg::ContactAdded,
+                        );
+                    }
                     None => {
-                        *error = Some("Código inválido. Ele começa com npub1 — confira e tente de novo.".into());
+                        *error = Some("Código inválido. Use o código curto (ex.: K7QF-9X2M) ou o completo, que começa com npub1.".into());
                         return Task::none();
                     }
                     Some(pk) if pk.to_hex() == me => {
@@ -752,6 +767,27 @@ impl Main {
             Msg::CopyMyCode => {
                 self.toast("Código copiado");
                 iced::clipboard::write(self.engine.npub())
+            }
+            Msg::ShortCodeCreate => {
+                if self.short_code_busy {
+                    return Task::none();
+                }
+                self.short_code_busy = true;
+                let e = self.eng();
+                Task::perform(async move { e.create_short_code().await.map_err(s) }, Msg::ShortCodeReady)
+            }
+            Msg::ShortCodeReady(r) => {
+                self.short_code_busy = false;
+                match r {
+                    Ok(c) => self.short_code = Some(c),
+                    Err(e) => self.toast(format!("Não deu para publicar o código: {e}")),
+                }
+                Task::none()
+            }
+            Msg::CopyShortCode => {
+                let Some((c, _)) = self.short_code.clone() else { return Task::none() };
+                self.toast("Código curto copiado");
+                iced::clipboard::write(c)
             }
             Msg::CopyInvite => {
                 self.toast("Convite copiado. Cole onde quiser mandar.");
