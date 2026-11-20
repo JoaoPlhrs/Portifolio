@@ -177,6 +177,14 @@ impl Store {
             conn.execute_batch("ALTER TABLE msgs ADD COLUMN reacts TEXT NOT NULL DEFAULT '{}';")?;
         }
 
+        // Banner e jogos favoritos dos contatos (JSON), em bancos antigos.
+        let tem_extra: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('contacts') WHERE name = 'extra'")?
+            .exists([])?;
+        if !tem_extra && conn.prepare("SELECT 1 FROM pragma_table_info('contacts')")?.exists([])? {
+            conn.execute_batch("ALTER TABLE contacts ADD COLUMN extra TEXT NOT NULL DEFAULT '{}';")?;
+        }
+
         let found: i64 = conn
             .query_row("SELECT v FROM kv WHERE k = 'schema'", [], |r| {
                 r.get::<_, String>(0)

@@ -137,6 +137,48 @@ pub fn avatar(bytes: &[u8], crop: Option<(u32, u32, u32)>) -> Result<String> {
     }
 }
 
+/// Banner do perfil: retângulo 3:1, 600×200, em data URL pequena (cabe no
+/// limite do banner, 24 000 caracteres). `crop` é (x, y, largura, altura)
+/// na imagem original; sem ele, pega a faixa do meio.
+pub const BANNER_W: u32 = 600;
+pub const BANNER_H: u32 = 200;
+pub const BANNER_MAX_LEN: usize = 24_000;
+
+pub fn banner(bytes: &[u8], crop: Option<(u32, u32, u32, u32)>) -> Result<String> {
+    let img = open(bytes)?;
+    let (w, h) = (img.width().max(1), img.height().max(1));
+    let (x, y, cw, ch) = match crop {
+        Some((x, y, cw, ch)) => {
+            let cw = cw.clamp(1, w);
+            let ch = ch.clamp(1, h);
+            (x.min(w - cw), y.min(h - ch), cw, ch)
+        }
+        None => {
+            let cw = w.min(h * 3);
+            let ch = (cw / 3).max(1);
+            ((w - cw) / 2, (h - ch) / 2, cw, ch)
+        }
+    };
+    let faixa = img.crop_imm(x, y, cw, ch);
+    let (mut bw, mut bh) = (BANNER_W, BANNER_H);
+    loop {
+        let p = faixa.resize_exact(bw, bh, image::imageops::FilterType::Lanczos3);
+        let mut q = 80i32;
+        while q >= 30 {
+            let u = data_url("image/jpeg", &jpeg(&p, q as u8)?);
+            if u.len() <= BANNER_MAX_LEN {
+                return Ok(u);
+            }
+            q -= 8;
+        }
+        if bw <= 300 {
+            return Err(PhotoError::Encode("não coube no tamanho do banner".into()));
+        }
+        bw -= 100;
+        bh = bw / 3;
+    }
+}
+
 /// Decodifica para mostrar na tela (RGBA), limitando o tamanho para não
 /// gastar memória à toa com fotos enormes.
 pub fn to_rgba(bytes: &[u8], max_side: u32) -> Result<(u32, u32, Vec<u8>)> {
@@ -178,6 +220,14 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .unwrap();
         out
+    }
+
+    #[test]
+    fn banner_cabe_no_limite() {
+        let u = banner(&foto(1600, 900), None).unwrap();
+        assert!(u.starts_with("data:image/jpeg;base64,") && u.len() <= BANNER_MAX_LEN);
+        let u = banner(&foto(800, 800), Some((0, 100, 600, 200))).unwrap();
+        assert!(u.len() <= BANNER_MAX_LEN);
     }
 
     #[test]

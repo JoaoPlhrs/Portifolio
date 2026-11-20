@@ -510,3 +510,23 @@ async fn codigo_curto_encontra_a_pessoa() {
     // Código que ninguém publicou.
     assert!(beto.resolve_short_code("ZZZZ-ZZZZ").await.is_err());
 }
+
+/// Banner e jogos favoritos chegam ao contato; tirar o banner também.
+#[tokio::test(flavor = "multi_thread")]
+async fn banner_e_jogos_favoritos_chegam() {
+    let Some(relay) = TestRelay::start(7842) else { return };
+    let ((ana, _ra), (beto, _rb)) = dupla(&relay).await;
+    let banner = format!("data:image/jpeg;base64,{}", "A".repeat(4000));
+    let jogos = vec!["Minecraft".to_string(), "Valorant".into(), "minecraft".into(), "  ".into()];
+    ana.update_profile_extras(Some(&banner), Some(&jogos)).await.unwrap();
+    assert_eq!(ana.me().games, vec!["Minecraft".to_string(), "Valorant".into()]);
+    let pk = ana.pk_hex();
+    assert!(
+        ate_que(10, || beto.contact(&pk).is_some_and(|c| c.banner.as_deref() == Some(banner.as_str()) && c.games.len() == 2)).await,
+        "banner e jogos não chegaram"
+    );
+    ana.update_profile_extras(Some(""), None).await.unwrap();
+    assert!(ate_que(10, || beto.contact(&pk).is_some_and(|c| c.banner.is_none() && c.games.len() == 2)).await, "remoção do banner não chegou");
+    // Banner grande demais é recusado antes de sair.
+    assert!(ana.update_profile_extras(Some(&format!("data:image/jpeg;base64,{}", "A".repeat(30_000))), None).await.is_err());
+}

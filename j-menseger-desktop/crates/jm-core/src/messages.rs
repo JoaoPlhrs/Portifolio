@@ -101,7 +101,15 @@ pub enum AppMessage {
         p: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         r: Vec<String>,
+        /// Jogos favoritos (versões antigas não mandam: fica como estava).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        g: Option<Vec<String>>,
     },
+    /// Banner do perfil (data URL; vazio tira o banner). Separado do perfil
+    /// porque foto e banner juntos passariam do tamanho que os servidores
+    /// aceitam por envelope.
+    #[serde(rename = "pban")]
+    ProfileBanner { b: String },
     /// "Me manda seu perfil": enviado quando ainda não se conhece o nome.
     #[serde(rename = "profreq")]
     ProfileRequest,
@@ -365,7 +373,9 @@ mod tests {
                 c: 3,
                 p: Some("data:image/webp;base64,AAA".into()),
                 r: vec!["wss://nos.lol".into()],
+                g: Some(vec!["Minecraft".into()]),
             },
+            AppMessage::ProfileBanner { b: "data:image/jpeg;base64,AAA".into() },
             AppMessage::ProfileRequest,
             AppMessage::Receipt {
                 s: ReceiptKind::Read,

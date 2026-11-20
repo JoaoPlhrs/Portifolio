@@ -58,10 +58,39 @@ pub enum Pic {
 /// Qualquer outra coisa (um endereço da internet, por exemplo) seria um jeito
 /// de alguém descobrir quando você abre o perfil dele.
 pub fn clean_pic(p: &str) -> Pic {
+    clean_image_url(p, PIC_MAX)
+}
+
+/// Banner do perfil: imagem larga (3:1), no mesmo limite de tamanho da foto.
+/// Vai numa mensagem separada do perfil para o envelope caber nos servidores.
+pub const BANNER_MAX: usize = 24_000;
+
+pub fn clean_banner(p: &str) -> Pic {
+    clean_image_url(p, BANNER_MAX)
+}
+
+/// Jogos favoritos: até 6 nomes de até 30 caracteres, sem repetir.
+pub const MAX_GAMES: usize = 6;
+
+pub fn clean_games(v: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in v {
+        let g: String = g.trim().chars().filter(|c| !c.is_control()).take(30).collect();
+        if !g.is_empty() && !out.iter().any(|x| x.to_lowercase() == g.to_lowercase()) {
+            out.push(g);
+        }
+        if out.len() == MAX_GAMES {
+            break;
+        }
+    }
+    out
+}
+
+fn clean_image_url(p: &str, max: usize) -> Pic {
     if p.is_empty() {
         return Pic::Remove;
     }
-    if p.len() > PIC_MAX {
+    if p.len() > max {
         return Pic::Invalid;
     }
     let Some(rest) = ["data:image/webp;base64,", "data:image/jpeg;base64,", "data:image/png;base64,"]

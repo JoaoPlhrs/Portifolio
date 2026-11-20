@@ -71,6 +71,10 @@ pub struct Profile {
     pub created: i64,
     #[serde(default)]
     pub restored: bool,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub games: Vec<String>,
 }
 
 /// Situação de um contato.
@@ -108,6 +112,10 @@ pub struct Contact {
     pub prof_sent: bool,
     #[serde(default)]
     pub added_at: i64,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub games: Vec<String>,
 }
 
 impl Contact {
@@ -543,6 +551,7 @@ impl Engine {
             pic: None,
             created: now_ms(),
             restored: false,
+            ..Default::default()
         };
         store.set_kv("account_sk", &keys.secret_key().to_secret_hex())?;
         if let Some(w) = identity::valid_words(words) {
@@ -910,7 +919,24 @@ impl Engine {
         let ts = r.created_at.as_secs() as i64 * 1000;
         let aceito = known.is_some_and(|c| c.status == ContactStatus::Ok);
         match app {
-            AppMessage::Profile { n, s, c, p, r: relays } if !mine => {
+            AppMessage::ProfileBanner { b } if !mine => {
+                if known.is_none() {
+                    return Ok(());
+                }
+                let snap = {
+                    let mut st = self.state.lock().unwrap();
+                    let Some(ct) = st.contacts.get_mut(peer) else { return Ok(()) };
+                    match media::clean_banner(&b) {
+                        Pic::Set(x) => ct.banner = Some(x),
+                        Pic::Remove => ct.banner = None,
+                        Pic::Invalid => return Ok(()),
+                    }
+                    ct.clone()
+                };
+                self.save_contact(&snap)?;
+                let _ = self.events.send(EngineEvent::ContactChanged { pk: peer.into() });
+            }
+            AppMessage::Profile { n, s, c, p, r: relays, g } if !mine => {
                 self.ensure_contact(peer, ContactStatus::Request)?;
                 let snapshot = {
                     let mut st = self.state.lock().unwrap();
@@ -926,6 +952,9 @@ impl Engine {
                         _ => {}
                     }
                     ct.relays = relays.iter().filter_map(|u| normalize_url(u)).take(5).collect();
+                    if let Some(g) = &g {
+                        ct.games = media::clean_games(g);
+                    }
                     ct.clone()
                 };
                 self.save_contact(&snapshot)?;
@@ -1969,9 +1998,14 @@ impl Engine {
             c: me.tone,
             p: Some(me.pic.clone().unwrap_or_default()),
             r: self.settings().relays.iter().take(5).cloned().collect(),
+            g: Some(me.games.clone()),
         };
         let chat = ChatKey::Direct { peer: pk.to_string() }.as_string();
         self.send_app(&chat, &app, BuildOpts { no_self_copy: true, no_ttl: true, ..Default::default() }).await?;
+        if let Some(b) = &me.banner {
+            let ban = AppMessage::ProfileBanner { b: b.clone() };
+            self.send_app(&chat, &ban, BuildOpts { no_self_copy: true, no_ttl: true, ..Default::default() }).await?;
+        }
         let snap = {
             let mut st = self.state.lock().unwrap();
             st.contacts.get_mut(pk).filter(|c| !c.prof_sent).map(|c| {
@@ -2031,6 +2065,43 @@ impl Engine {
                 let _ = me
                     .send_group_app(&lid, &AppMessage::GroupJoin { n: p.name.clone(), p: Some(p.pic.clone().unwrap_or_default()) }, BuildOpts::default())
                     .await;
+            }
+        });
+        Ok(())
+    }
+
+    /// Banner e jogos favoritos. `banner` vazio tira o banner. Os contatos
+    /// aceitos recebem a mudança.
+    pub async fn update_profile_extras(self: &Arc<Self>, banner: Option<&str>, games: Option<&[String]>) -> Result<()> {
+        let tirou_banner;
+        {
+            let mut me = self.me.write().unwrap();
+            let antes = me.banner.is_some();
+            if let Some(b) = banner {
+                match media::clean_banner(b) {
+                    Pic::Set(s) => me.banner = Some(s),
+                    Pic::Remove => me.banner = None,
+                    Pic::Invalid => return Err(erro("banner inválido")),
+                }
+            }
+            if let Some(g) = games {
+                me.games = media::clean_games(g);
+            }
+            tirou_banner = antes && me.banner.is_none();
+            self.store.lock().unwrap().set_kv("me", &*me)?;
+        }
+        let _ = self.events.send(EngineEvent::ProfileChanged);
+        let contatos: Vec<String> = self.contacts().into_iter().filter(|c| c.status == ContactStatus::Ok).map(|c| c.pk).collect();
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            for pk in contatos {
+                let _ = me.send_profile(&pk).await;
+                if tirou_banner {
+                    let chat = ChatKey::Direct { peer: pk.clone() }.as_string();
+                    let _ = me
+                        .send_app(&chat, &AppMessage::ProfileBanner { b: String::new() }, BuildOpts { no_self_copy: true, no_ttl: true, ..Default::default() })
+                        .await;
+                }
             }
         });
         Ok(())
@@ -2441,15 +2512,16 @@ impl Engine {
     fn save_contact(&self, c: &Contact) -> Result<()> {
         let store = self.store.lock().unwrap();
         store.raw().execute(
-            "INSERT INTO contacts (pk, name, nick, note, pic, tone, status, verified, relays, prof_sent, added_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            "INSERT INTO contacts (pk, name, nick, note, pic, tone, status, verified, relays, prof_sent, added_at, extra)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(pk) DO UPDATE SET name=?2, nick=?3, note=?4, pic=?5, tone=?6, status=?7,
-                                           verified=?8, relays=?9, prof_sent=?10",
+                                           verified=?8, relays=?9, prof_sent=?10, extra=?12",
             rusqlite::params![
                 c.pk, c.name, c.nick, c.note, c.pic, c.tone,
                 status_name(c.status), c.verified as i64,
                 serde_json::to_string(&c.relays).unwrap_or_else(|_| "[]".into()),
-                c.prof_sent as i64, c.added_at
+                c.prof_sent as i64, c.added_at,
+                serde_json::json!({ "b": c.banner, "g": c.games }).to_string()
             ],
         ).map_err(crate::store::StoreError::from)?;
         Ok(())
@@ -3459,13 +3531,15 @@ fn new_contact(pk: &str, status: ContactStatus) -> Contact {
         relays: Vec::new(),
         prof_sent: false,
         added_at: now_ms(),
+        banner: None,
+        games: Vec::new(),
     }
 }
 
 fn load_contacts(store: &Store) -> Result<HashMap<String, Contact>> {
     let mut stmt = store
         .raw()
-        .prepare("SELECT pk, name, nick, note, pic, tone, status, verified, relays, prof_sent, added_at FROM contacts")
+        .prepare("SELECT pk, name, nick, note, pic, tone, status, verified, relays, prof_sent, added_at, extra FROM contacts")
         .map_err(crate::store::StoreError::from)?;
     let rows: Vec<Contact> = stmt
         .query_map([], |r| {
@@ -3481,6 +3555,14 @@ fn load_contacts(store: &Store) -> Result<HashMap<String, Contact>> {
                 relays: serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default(),
                 prof_sent: r.get::<_, i64>(9)? != 0,
                 added_at: r.get(10)?,
+                banner: None,
+                games: Vec::new(),
+            })
+            .map(|mut c| {
+                let extra: serde_json::Value = r.get::<_, String>(11).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+                c.banner = extra["b"].as_str().map(str::to_string);
+                c.games = extra["g"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                c
             })
         })
         .map_err(crate::store::StoreError::from)?
