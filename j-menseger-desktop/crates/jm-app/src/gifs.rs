@@ -34,7 +34,7 @@ impl Provider {
 /// Vazias, a busca de GIFs fica desligada (GIF do computador continua
 /// funcionando).
 const TENOR_APP_KEY: &str = "";
-const GIPHY_APP_KEY: &str = "";
+const GIPHY_APP_KEY: &str = "HPMOkQnffVZSf1lRx8PmAhJ5j2D0UMgj";
 
 pub fn tenor_key() -> &'static str {
     option_env!("JM_TENOR_KEY").filter(|k| !k.trim().is_empty()).unwrap_or(TENOR_APP_KEY).trim()
@@ -111,7 +111,10 @@ fn erro_http(p: Provider, e: ureq::Error) -> String {
         ureq::Error::Status(400 | 401 | 403, _) => format!("O {} recusou a chave do aplicativo. A busca de GIFs volta numa próxima versão.", p.label()),
         ureq::Error::Status(429, _) => format!("Limite de buscas do {} atingido. Tente daqui a pouco.", p.label()),
         ureq::Error::Status(c, _) => format!("O {} respondeu com erro {c}.", p.label()),
-        ureq::Error::Transport(t) => format!("Sem conexão com o {}: {t}", p.label()),
+        ureq::Error::Transport(t) => {
+            tracing::warn!("busca de GIFs: {}", t.kind());
+            format!("Sem conexão com o {}. Confira a internet e tente de novo.", p.label())
+        }
     }
 }
 
@@ -228,7 +231,7 @@ pub fn download(url: &str, max: usize) -> Result<Vec<u8>, String> {
     }
     let r = agente().get(url).call().map_err(|e| match e {
         ureq::Error::Status(c, _) => format!("Não deu para baixar o GIF (erro {c})."),
-        ureq::Error::Transport(t) => format!("Não deu para baixar o GIF: {t}"),
+        ureq::Error::Transport(_) => "Não deu para baixar o GIF. Confira a internet.".to_string(),
     })?;
     let mut buf = Vec::new();
     r.into_reader().take(max as u64 + 1).read_to_end(&mut buf).map_err(|e| e.to_string())?;

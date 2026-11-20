@@ -31,7 +31,7 @@ com o que foi executado para conferir cada um, está em
 | Código de convite curto, banner e jogos favoritos no perfil | **Pronto** (o celular ainda não entende) | Testes entre duas contas e conferido na interface |
 | Ajustes de voz e áudio (microfone, saída, volumes, teste) | **Pronto** | Escolher o microfone pelo nome funcionou onde o padrão falhava; sem som real aqui |
 | Chamada em tela cheia no estilo Discord | **Pronto** | Chamada 1:1, transmissão e sala de voz; tela cheia real depende de um gerenciador de janelas |
-| GIFs (Tenor/GIPHY com a chave do app, do computador, animados) | **Pronto; a busca espera a chave do app** (o celular ainda não mostra) | GIF enviado e animado nos dois lados; a busca só liga quando o app tiver chave |
+| GIFs (GIPHY com a chave do app; Tenor depois; do computador, animados) | **Pronto** (o celular ainda não mostra) | GIF enviado e animado nos dois lados. A busca no GIPHY liga com a chave do app, mas **não foi feita daqui**: a rede deste ambiente bloqueia o GIPHY |
 | Música do Spotify no perfil ("Ouvindo Spotify") | **Pronto** (o celular ainda não mostra) | Spotify de teste no D-Bus: a música apareceu no perfil, no cabeçalho e sumiu ao parar. No Windows lê o título da janela do Spotify — **não testado num Windows** |
 | Animações (janelas, menus, barra da esquerda, "digitando", chamada chegando) | **Pronto** | Conferidas quadro a quadro em vídeo gravado da tela; dá para desligar em Aparência |
 | Instalador e desinstalador animados | **Pronto no Linux; no Windows só compilado** | Instalar, atualizar e desinstalar testados no Linux (tela e arquivos). Registro, atalhos .lnk e Área de Trabalho do Windows não puderam ser executados aqui |

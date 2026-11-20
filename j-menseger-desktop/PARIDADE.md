@@ -140,6 +140,6 @@ entender cada uma. Enquanto isso, o que o celular faz com elas está na
 - Notificações do sistema e o bloqueio de capturas, que dependem do Windows.
 - A **tela cheia de verdade** da chamada: no ambiente de teste não há
   gerenciador de janelas, então o palco foi conferido dentro da janela.
-- A **busca de GIFs**: espera as chaves do próprio app.
+- A **busca de GIFs no GIPHY** (a chave do app já está no programa; a rede do ambiente de testes bloqueia o GIPHY). O Tenor ainda não tem chave.
 - O **instalador no Windows** (registro, atalhos, Área de Trabalho) e a
   leitura do Spotify pelo título da janela: compilados, não executados.
