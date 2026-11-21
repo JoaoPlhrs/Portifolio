@@ -3,11 +3,17 @@
 #    para cá, e não só nas mais novas;
 #  - Mac num Mac (não dá para compilar para o macOS a partir do Linux).
 # Os arquivos prontos ficam em "Artifacts": Actions → PC (Linux e macOS) →
-# a execução mais recente → Artifacts.
+# a execução mais recente → Artifacts. Rodando à mão com "publicar", os
+# pacotes também vão para j-menseger-site/downloads/ no próprio branch.
 name: PC (Linux e macOS)
 
 on:
   workflow_dispatch:
+    inputs:
+      publicar:
+        description: 'Copiar os pacotes para j-menseger-site/downloads neste branch'
+        type: boolean
+        default: false
   push:
     branches: ['claude/**', 'main', 'master']
     paths:
@@ -100,3 +106,25 @@ jobs:
           name: J-Menseger-macos-${{ matrix.arq }}
           path: j-menseger-desktop/packaging/macos/dist/*.dmg
           if-no-files-found: error
+
+  publicar:
+    if: github.event_name == 'workflow_dispatch' && inputs.publicar
+    needs: [linux, mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: pacotes
+          merge-multiple: true
+      - name: Colocar no site e enviar
+        run: |
+          ls -la pacotes
+          cp pacotes/*.deb pacotes/*.tar.gz pacotes/*.dmg j-menseger-site/downloads/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add j-menseger-site/downloads
+          git commit -m "Site: pacotes de Linux e Mac compilados pelo GitHub Actions" || exit 0
+          git push
