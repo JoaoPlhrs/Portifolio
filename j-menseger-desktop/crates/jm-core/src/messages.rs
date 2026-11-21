@@ -260,6 +260,12 @@ pub enum AppMessage {
     /// Online (`on`), ausente (`away`) ou escondido (`off`). Sempre efêmero.
     #[serde(rename = "pres")]
     Presence { s: String },
+    /// Para a própria conta: "sou um aparelho novo, me mande o que você tem".
+    #[serde(rename = "sreq")]
+    SyncReq { dev: String },
+    /// Para a própria conta: contatos, grupos e ajustes (retrato sem mensagens).
+    #[serde(rename = "sync")]
+    Sync { dev: String, d: serde_json::Value },
 }
 
 /// Aceita `1`/`0` e também `true`/`false` (o JavaScript manda os dois).

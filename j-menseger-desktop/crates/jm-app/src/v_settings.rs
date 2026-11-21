@@ -881,6 +881,25 @@ fn storage(m: &Main) -> El<'_> {
         "Armazenamento",
         None,
         vec![
+            ui::label("Backup"),
+            ui::group(vec![
+                ui::setting(
+                    Some(Icon::Download),
+                    "Fazer backup das conversas",
+                    Some("Arquivo cifrado com a chave da sua conta: só abre com as suas palavras de recuperação. Fotos e áudios não entram.".into()),
+                    Trail::None,
+                    Some(Msg::BackupExport),
+                    false,
+                ),
+                ui::setting(
+                    Some(Icon::Upload),
+                    "Restaurar backup",
+                    Some("Junta as mensagens, contatos e grupos do arquivo com os daqui. Nada é apagado.".into()),
+                    Trail::None,
+                    Some(Msg::BackupImport),
+                    false,
+                ),
+            ]),
             ui::vspace(8.0),
             ui::group(vec![
                 ui::setting(Some(Icon::Db), "Espaço usado pelo app", None, Trail::Custom(text(t::bytes_label(banco)).size(13.5).color(t::FG_DIM).into()), None, false),

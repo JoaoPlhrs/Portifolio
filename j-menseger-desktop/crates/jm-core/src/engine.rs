@@ -31,6 +31,10 @@ use tokio::sync::mpsc;
 
 const DAY: i64 = 86_400;
 
+#[path = "snapshot.rs"]
+mod snapshot;
+pub use snapshot::Restored;
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error(transparent)]
@@ -152,7 +156,7 @@ pub struct ChatSummary {
 }
 
 /// Uma mensagem como a interface precisa dela.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Message {
     pub id: String,
     pub chat: String,
@@ -318,6 +322,8 @@ pub enum EngineEvent {
     Presence { pk: String },
     /// Mudaram as mensagens fixadas de uma conversa.
     Pins { chat: String },
+    /// Chegaram contatos ou grupos de outro aparelho da mesma conta.
+    Synced { contacts: usize, groups: usize },
     /// Os ajustes mudaram.
     SettingsChanged,
 }
@@ -895,6 +901,13 @@ impl Engine {
         let mine = from == eu;
         let peer = if mine { protocol::tag_value(r, "p").map(|s| s.to_string()) } else { Some(from.clone()) };
         let Some(peer) = peer else { return Ok(()) };
+        // Mensagem da conta para ela mesma: sincronia entre aparelhos.
+        if mine && peer == eu && r.kind.as_u16() == KIND_APP {
+            if let Some(app) = AppMessage::parse(&r.content) {
+                self.on_self_app(app);
+            }
+            return Ok(());
+        }
         if !is_hex64(&peer) || peer == eu {
             return Ok(());
         }

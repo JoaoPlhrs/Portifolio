@@ -114,6 +114,8 @@ pub enum Msg {
     OpenMemberRoles(String, String),
     RoleToggle(String, String, String, bool),
     MentionPick(String),
+    BackupExport,
+    BackupImport,
 
     /* geral */
     Engine(Box<EngineEvent>),

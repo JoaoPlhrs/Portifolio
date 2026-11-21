@@ -529,6 +529,8 @@ pub struct Main {
     pub update_at: Instant,
     /// Último aviso de online/ausente (ausente?, quando).
     pub pres_sent: Option<(bool, Instant)>,
+    /// Última conferência da sincronia com os outros aparelhos da conta.
+    pub sync_at: Instant,
     /// Mensagem destacada depois de pular até ela.
     pub flash: Option<(String, Instant)>,
     pub share_quality: Quality,
@@ -645,6 +647,7 @@ impl Main {
             update_msg: None,
             update_at: Instant::now() - Duration::from_secs(6 * 3600 - 8),
             pres_sent: None,
+            sync_at: Instant::now() - Duration::from_secs(50),
             flash: None,
             share_quality: Quality::P1080,
             modal: None,

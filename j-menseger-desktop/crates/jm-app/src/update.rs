@@ -1517,6 +1517,29 @@ impl Main {
                 c.editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
                 iced::widget::operation::focus(EDITOR_ID)
             }
+            Msg::BackupExport => {
+                let e = self.eng();
+                toast_done(async move {
+                    let dados = tokio::task::spawn_blocking(move || e.export_backup()).await.map_err(|e| e.to_string())?.map_err(s)?;
+                    platform::save_backup(dados).await
+                })
+            }
+            Msg::BackupImport => {
+                let e = self.eng();
+                toast_done(async move {
+                    let Some(f) = rfd::AsyncFileDialog::new()
+                        .set_title("Restaurar backup do J-Menseger")
+                        .add_filter("Backup do J-Menseger", &["jmbackup"])
+                        .pick_file()
+                        .await
+                    else {
+                        return Err(String::new());
+                    };
+                    let dados = tokio::fs::read(f.path()).await.map_err(|e| e.to_string())?;
+                    let r = e.import_backup(&dados).await.map_err(s)?;
+                    Ok(format!("Backup restaurado: {} mensagens, {} contatos e {} grupos novos", r.messages, r.contacts, r.groups))
+                })
+            }
             Msg::MemberMenu(lid, pk) => open_menu(CtxKind::Member(lid, pk)),
             Msg::SetAdmin(lid, pk, on) => {
                 self.menu = None;
@@ -2955,6 +2978,17 @@ impl Main {
                 })),
             ));
         }
+        if self.sync_at.elapsed() >= Duration::from_secs(60) {
+            self.sync_at = Instant::now();
+            let e = self.eng();
+            tarefas.push(Task::perform(
+                async move {
+                    e.sync_request().await;
+                    e.sync_push(false).await;
+                },
+                |_| Msg::Noop,
+            ));
+        }
         let ausente = !self.focused || self.lock.is_some();
         if self.pres_sent.is_none_or(|(a, t)| a != ausente || t.elapsed() >= Duration::from_secs(60)) {
             let forca = self.pres_sent.is_none_or(|(a, _)| a != ausente);
@@ -3000,6 +3034,11 @@ impl Main {
                 Task::none()
             }
             EngineEvent::Presence { .. } => Task::none(),
+            EngineEvent::Synced { contacts, groups } => {
+                self.toast(format!("Seu outro aparelho mandou {contacts} contatos e {groups} grupos"));
+                self.reload_contacts();
+                Task::batch([self.reload_groups(), self.reload_chats()])
+            }
             EngineEvent::Message { chat, message } => {
                 if let Some(c) = self.chat.as_mut().filter(|c| c.key == chat) {
                     if !c.messages.iter().any(|x| x.id == message.id) {

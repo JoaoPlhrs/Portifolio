@@ -187,6 +187,22 @@ pub async fn pick_audio() -> Result<Option<(String, Arc<Vec<f32>>)>, String> {
 }
 
 /// Salva uma foto recebida onde a pessoa escolher.
+/// Grava o arquivo de backup onde a pessoa escolher.
+pub async fn save_backup(bytes: Vec<u8>) -> Result<String, String> {
+    let nome = format!("J-Menseger backup {}.jmbackup", chrono::Local::now().format("%Y-%m-%d"));
+    let Some(f) = rfd::AsyncFileDialog::new()
+        .set_title("Salvar backup")
+        .set_file_name(&nome)
+        .add_filter("Backup do J-Menseger", &["jmbackup"])
+        .save_file()
+        .await
+    else {
+        return Err(String::new());
+    };
+    tokio::fs::write(f.path(), bytes).await.map_err(|e| e.to_string())?;
+    Ok("Backup salvo. Guarde junto com suas palavras de recuperação.".into())
+}
+
 pub async fn save_photo(bytes: Vec<u8>, mime: String) -> Result<String, String> {
     let ext = if mime.contains("gif") {
         "gif"
