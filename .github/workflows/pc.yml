@@ -29,6 +29,16 @@ jobs:
             libxcb1-dev libx11-dev libx11-xcb-dev libxcb-render0-dev libxcb-shm0-dev libxcb-xkb-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev libwayland-dev \
             libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev clang cmake nasm
+          # A captura de tela no Wayland (xcap → pipewire 0.10) pede os
+          # cabeçalhos do PipeWire 1.0; o 22.04 tem os da 0.3.48. Só os
+          # cabeçalhos vêm do Ubuntu 24.04: o programa continua usando a
+          # biblioteca que o sistema de quem instala já tem.
+          base=http://archive.ubuntu.com/ubuntu/pool/main/p/pipewire
+          mkdir -p /tmp/pw && cd /tmp/pw
+          curl -fsSLO $base/libspa-0.2-dev_1.0.5-1_amd64.deb
+          curl -fsSLO $base/libpipewire-0.3-dev_1.0.5-1_amd64.deb
+          for d in *.deb; do dpkg-deb -x "$d" raiz; done
+          sudo cp -r raiz/usr/include/spa-0.2 raiz/usr/include/pipewire-0.3 /usr/include/
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
