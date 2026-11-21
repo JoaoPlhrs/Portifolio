@@ -123,6 +123,7 @@ pub fn call_panel<'a>(m: &'a Main, c: &'a CallInfo) -> El<'a> {
         } else {
             round_btn(Icon::Screen, CallBtn::Normal, "Transmitir a tela", ativo.then_some(Msg::OpenShare))
         });
+        r = r.push(round_btn(Icon::Volume, CallBtn::Normal, "Volume desta pessoa", Some(Msg::OpenPeerVolume(c.peer.clone()))));
         r = r.push(round_btn(Icon::Maximize, CallBtn::Normal, "Tela cheia (F11)", ativo.then_some(Msg::CallFull(true))));
         r = r.push(round_btn(Icon::PhoneOff, CallBtn::Danger, "Desligar", Some(Msg::HangUp)));
         if !c.muted && !c.sem_microfone {
@@ -304,13 +305,16 @@ fn tile<'a>(m: &'a Main, pk: &str, falando: bool, mudo: bool, conectado: bool, e
                 .into(),
         );
     }
-    container(stack(camadas))
-        .style(move |_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(t::surface())),
-            border: iced::Border { color: if falando { t::accent() } else { t::line() }, width: if falando { 2.0 } else { 1.0 }, radius: 14.0.into() },
-            ..Default::default()
-        })
-        .into()
+    let caixa = container(stack(camadas)).style(move |_| iced::widget::container::Style {
+        background: Some(iced::Background::Color(t::surface())),
+        border: iced::Border { color: if falando { t::accent() } else { t::line() }, width: if falando { 2.0 } else { 1.0 }, radius: 14.0.into() },
+        ..Default::default()
+    });
+    if eu {
+        return caixa.into();
+    }
+    // Clicar em alguém: volume só dessa pessoa.
+    ui::tip(button(caixa).padding(0).style(t::ghost).on_press(Msg::OpenPeerVolume(pk.to_string())), "Volume desta pessoa", tooltip::Position::Bottom)
 }
 
 /// "Voz conectada": fica na barra lateral enquanto há chamada ou sala.

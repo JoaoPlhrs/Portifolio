@@ -1572,6 +1572,23 @@ impl Main {
                 let e = self.eng();
                 done(async move { e.edit_group(&lid, &[GroupPatch::MemberRole { pk, id, on }]).await.map_err(s) })
             }
+            Msg::ShareAudio(on) => {
+                self.share_audio = on;
+                let _ = self.engine.set_ui_pref("share_audio", &on);
+                Task::none()
+            }
+            Msg::OpenPeerVolume(pk) => {
+                self.close_overlays();
+                let v = self.calls.peer_volume(&pk);
+                self.modal = Some(Modal::PeerVolume { pk, v });
+                Task::none()
+            }
+            Msg::PeerVolume(nv) => {
+                let Some(Modal::PeerVolume { pk, v }) = &mut self.modal else { return Task::none() };
+                *v = nv;
+                let (pk, c) = (pk.clone(), Arc::clone(&self.calls));
+                Task::perform(async move { c.set_peer_volume(&pk, nv).await }, |_| Msg::Noop)
+            }
             Msg::MentionPick(nome) => {
                 let Some(c) = self.chat.as_mut() else { return Task::none() };
                 let t = c.editor.text();
@@ -1865,7 +1882,17 @@ impl Main {
                 let Some(Modal::Share { sources }) = self.modal.take() else { return Task::none() };
                 let Some(src) = sources.into_iter().find(|s| s.id == id) else { return Task::none() };
                 let (c, q) = (Arc::clone(&self.calls), self.share_quality);
-                done(async move { c.start_sharing(src, q, Fps::Fps30).await })
+                let audio = self.share_audio && jm_media::sysaudio::supported() && src.kind != jm_media::screen::SourceKind::Camera;
+                done(async move {
+                    c.start_sharing(src, q, Fps::Fps30).await?;
+                    if audio {
+                        if let Err(e) = jm_media::sysaudio::start() {
+                            tracing::warn!("áudio do PC: {e}");
+                            return Err(format!("A tela foi, mas o áudio do PC não: {e}"));
+                        }
+                    }
+                    Ok(())
+                })
             }
             Msg::StopSharing => {
                 let c = Arc::clone(&self.calls);

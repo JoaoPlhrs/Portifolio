@@ -409,6 +409,7 @@ pub enum Modal {
     Crop(CropState),
     Search { all: Vec<CoreMessage>, query: String },
     Forward { id: String, query: String },
+    PeerVolume { pk: String, v: f32 },
     NewEvent { title: String, date: String, time: String, desc: String },
     ViewOnce { handle: image::Handle },
     Pins { list: Vec<CoreMessage> },
@@ -550,6 +551,8 @@ pub struct Main {
     /// Mensagem destacada depois de pular até ela.
     pub flash: Option<(String, Instant)>,
     pub share_quality: Quality,
+    /// Mandar também o áudio do PC ao transmitir (Windows).
+    pub share_audio: bool,
 
     pub modal: Option<Modal>,
     pub popup: Option<Popup>,
@@ -670,6 +673,7 @@ impl Main {
             sync_at: Instant::now() - Duration::from_secs(50),
             evt_at: Instant::now(),
             flash: None,
+            share_audio: engine.ui_pref::<bool>("share_audio").unwrap_or(true),
             share_quality: Quality::P1080,
             modal: None,
             popup: None,

@@ -4515,3 +4515,8 @@ textarea.inp {
 .evb { display: flex; gap: 6px; }
 .rsvpb { flex: 1; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: none; color: inherit; font: inherit; font-weight: 600; font-size: 13px; padding: 7px 0; border-radius: 99px; cursor: pointer; }
 .rsvpb.on { background: var(--accent); border-color: var(--accent); color: #041; }
+
+.volrow { display: flex; align-items: center; gap: 12px; padding: 10px 2px 16px; }
+.volrow input { flex: 1; accent-color: var(--accent); }
+.volrow b { width: 44px; text-align: right; }
+.ptile[data-act="peerVol"] { cursor: pointer; }

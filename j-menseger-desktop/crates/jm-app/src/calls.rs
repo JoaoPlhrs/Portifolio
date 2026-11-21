@@ -695,6 +695,7 @@ impl CallManager {
         let anterior = self.active.lock().await.take();
         self.tone(None);
         let Some(a) = anterior else { return };
+        jm_media::sysaudio::stop();
         *self.ending.lock().await = Some((a.link.pk.clone(), reason, Instant::now()));
         if let Some((_, parar)) = &a.sharing {
             parar.store(true, Ordering::Relaxed);
@@ -825,6 +826,9 @@ impl CallManager {
         }
         self.tone(None);
         let saida = Playback::start(None).ok();
+        if let (Some(p), Some(pk)) = (&saida, self.active.lock().await.as_ref().map(|a| a.link.pk.clone())) {
+            p.set_volume(self.peer_volume(&pk));
+        }
         let entrada = Capture::start(None);
         let (conn, mudo) = {
             let mut g = self.active.lock().await;
@@ -1002,8 +1006,32 @@ impl CallManager {
         }
     }
 
+    /// Volume de cada pessoa (0 a 2; 1 = normal), guardado entre chamadas.
+    pub fn peer_volume(&self, pk: &str) -> f32 {
+        self.engine.ui_pref::<f32>(&format!("vol.{pk}")).unwrap_or(1.0).clamp(0.0, 2.0)
+    }
+
+    /// Muda o volume de alguém: na hora, na chamada ou na sala, e para as próximas.
+    pub async fn set_peer_volume(&self, pk: &str, v: f32) {
+        let v = v.clamp(0.0, 2.0);
+        let _ = self.engine.set_ui_pref(&format!("vol.{pk}"), &v);
+        if let Some(r) = self.room.lock().await.as_ref() {
+            if let Some(p) = r.playbacks.get(pk) {
+                p.set_volume(v);
+            }
+        }
+        if let Some(a) = self.active.lock().await.as_ref() {
+            if a.link.pk == pk {
+                if let Some(p) = &a.playback {
+                    p.set_volume(v);
+                }
+            }
+        }
+    }
+
     /// Para a transmissão de tela (ou a câmera).
     pub async fn stop_sharing(self: &Arc<Self>) {
+        jm_media::sysaudio::stop();
         // Na sala: avisa todo mundo.
         let sala = {
             let mut g = self.room.lock().await;
@@ -1262,6 +1290,7 @@ impl CallManager {
     pub async fn leave_room(self: &Arc<Self>) {
         let Some(r) = self.room.lock().await.take() else { return };
         r.stop.store(true, Ordering::Relaxed);
+        jm_media::sysaudio::stop();
         if let Some((_, parar)) = &r.sharing {
             parar.store(true, Ordering::Relaxed);
             *self.preview.lock().unwrap() = None;
@@ -1390,6 +1419,9 @@ impl CallManager {
                         }
                         // Alto-falante próprio para esta pessoa; o sistema mistura.
                         let saida = Playback::start(None).ok();
+                        if let Some(p) = &saida {
+                            p.set_volume(eu.peer_volume(&link.pk));
+                        }
                         let mut rx = {
                             let mut g = eu.room.lock().await;
                             let Some(r) = g.as_mut() else { break };

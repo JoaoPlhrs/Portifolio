@@ -17499,6 +17499,41 @@ zoo`.split(`
       n = e.value.slice(0, a).replace(/@([^\s@]{0,20})$/, "@" + t.dataset.n + " ");
     (e.value = n + e.value.slice(a)), e.setSelectionRange(n.length, n.length), e.focus({ preventScroll: !0 }), vo(e), wo(), jmMentionSuggest(e);
   });
+  // ---- Volume de cada pessoa (só o que você ouve; fica guardado) ----
+  var jmVols = {};
+  function jmVolOf(t) {
+    let e = jmVols[t];
+    return typeof e == "number" ? Math.max(0, Math.min(1, e)) : 1;
+  }
+  async function jmVolLoad() {
+    try {
+      jmVols = (await h.engine.kv("vols", {})) || {};
+    } catch {}
+  }
+  function jmVolApply(t) {
+    let e = jmVolOf(t);
+    for (let a of oe(`audio[data-aud="${t}"], video[data-vid="${t}"]`)) a.volume = e;
+    let a = y("#rvid");
+    a && H && H.pk === t && (a.volume = e);
+  }
+  b("peerVol", (t) => {
+    let e = t.dataset.pk,
+      a = Math.round(jmVolOf(e) * 100);
+    ee(`<h2 class="sh-title">Volume de ${M(ne(e))}</h2><p class="sh-sub">S\xF3 muda o que voc\xEA ouve. Fica guardado para as pr\xF3ximas chamadas.</p>
+    <div class="volrow">${x("volume")}<input type="range" id="pvol" min="0" max="100" step="5" value="${a}" data-pk="${e}"><b id="pvolv">${a}%</b></div>
+    <button class="btn ghost" data-act="peerVolReset" data-pk="${e}">Voltar ao normal</button>`);
+  });
+  document.addEventListener("input", (t) => {
+    if (t.target.id !== "pvol") return;
+    let e = t.target.dataset.pk,
+      a = +t.target.value;
+    (jmVols[e] = a / 100), jmVolApply(e);
+    let n = y("#pvolv");
+    n && (n.textContent = a + "%"), clearTimeout(jmVolLoad.t), (jmVolLoad.t = setTimeout(() => h.engine.setKv("vols", jmVols), 400));
+  });
+  b("peerVolReset", (t) => {
+    delete jmVols[t.dataset.pk], jmVolApply(t.dataset.pk), h.engine.setKv("vols", jmVols), F();
+  });
   // ---- Eventos ----
   function jmEventHtml(t) {
     let e = t.evt || {},
@@ -19425,6 +19460,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       e("cCam", t.cam && !t.scr, t.cam && !t.scr ? "video" : "videooff", "C\xE2mera") +
       (X.available ? e("cScreen", !!t.scr, "share", t.scr ? "Parar" : "Tela") : "") +
       `<button class="cbtn sbtn" data-act="cSounds"><span class="cc">${x("wave")}</span>Sons</button>` +
+      (t === H && H ? `<button class="cbtn" data-act="peerVol" data-pk="${H.pk}"><span class="cc">${x("volume")}</span>Volume</button>` : "") +
       (t.cam && !t.scr
         ? e("cFlip", !1, "flip", "Virar")
         : e("cSpk", t.spk, "volume", "Alto-falante"))
@@ -19454,6 +19490,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         H.peer &&
         t.srcObject !== H.peer.remote &&
         ((t.srcObject = H.peer.remote),
+        (t.volume = jmVolOf(H.pk)),
         t.play().catch(() => {}),
         (t.onresize = () => {
           // Vídeo deitado (tela do computador) aparece inteiro; câmera em pé preenche.
@@ -20182,7 +20219,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
           (
             [c, l, u, d, f],
             p,
-          ) => `<div class="ptile" style="--i:${p}" data-sp="${c}">
+          ) => `<div class="ptile" style="--i:${p}" data-sp="${c}" ${c !== "me" ? `data-act="peerVol" data-pk="${l}"` : ""}>
       ${d ? `<video data-vid="${c}" autoplay playsinline ${c === "me" ? "muted" : ""}></video>` : pe(l, 64, { badge: !1 })}
       ${c !== "me" && f !== "connected" ? '<span class="pst">conectando\u2026</span>' : ""}
       <span class="pn">${u ? "" : x("micoff")}${c === "me" ? "Voc\xEA" : M(Ue(l))}</span>
@@ -20196,11 +20233,12 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       let l = c.dataset.vid;
       (c.srcObject =
         l === "me" ? z.stream : (z.peers.get(l) || {}).peer.remote),
+        l !== "me" && (c.volume = jmVolOf(l)),
         c.play().catch(() => {});
     }
     for (let c of oe("audio[data-aud]", i)) {
       let l = z.peers.get(c.dataset.aud);
-      l && ((c.srcObject = l.peer.remote), c.play().catch(() => {}));
+      l && ((c.srcObject = l.peer.remote), (c.volume = jmVolOf(c.dataset.aud)), c.play().catch(() => {}));
     }
     So();
   }
@@ -21699,6 +21737,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       setInterval(Mi, 1500),
       X.available && (setTimeout(() => X.updateCheck(), 8e3), setInterval(() => X.updateCheck(), 216e5)),
       setTimeout(() => jmPresTick(!0), 2500),
+      jmVolLoad(),
       setTimeout(() => e.syncRequest().then(() => e.syncPush(!1)).catch(() => {}), 1e4),
       setInterval(() => e.syncPush(!1).catch(() => {}), 6e4),
       setInterval(() => jmPresTick(), 6e4),

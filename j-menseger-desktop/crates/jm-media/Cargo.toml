@@ -26,6 +26,11 @@ base64 = "0.22"
 # Tudo em Rust: nada a mais para compilar no Windows.
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "wav", "pcm", "vorbis", "ogg"] }
 
+[target.'cfg(windows)'.dependencies]
+# Áudio do PC na transmissão (WASAPI "process loopback", sem o próprio app).
+wasapi = "0.27"
+windows-version = "0.1"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 

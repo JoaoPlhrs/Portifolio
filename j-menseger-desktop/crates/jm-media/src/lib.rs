@@ -19,3 +19,4 @@ pub mod screen;
 pub mod video;
 
 pub use codec::{AudioQuality, Decoder, Encoder, VoiceDetector, FRAME_SAMPLES, SAMPLE_RATE};
+pub mod sysaudio;

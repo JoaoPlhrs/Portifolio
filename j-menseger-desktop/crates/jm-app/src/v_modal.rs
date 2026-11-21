@@ -169,6 +169,22 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         Modal::Crop(c) => crop(m, c),
         Modal::Search { all, query } => search(m, all, query),
         Modal::Forward { query, .. } => forward(m, query),
+        Modal::PeerVolume { pk, v } => card(
+            380.0,
+            column![
+                head(&format!("Volume de {}", m.name_of(pk)), Some("Só muda o que você ouve. Fica guardado para as próximas chamadas.")),
+                row![
+                    icon(Icon::Volume, 18.0, t::FG_DIM),
+                    iced::widget::slider(0.0..=2.0, *v, Msg::PeerVolume).step(0.05_f32).width(Length::Fill),
+                    text(format!("{:.0}%", v * 100.0)).size(14).font(SEMI).color(t::FG).width(48)
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+                row![ui::ghost(None, "Voltar ao normal", Some(Msg::PeerVolume(1.0))), ui::fill(), ui::primary(None, "Pronto", Some(Msg::Key(Key::Escape)))].spacing(8),
+            ]
+            .spacing(14)
+            .into(),
+        ),
         Modal::NewEvent { title, date, time, desc } => card(
             440.0,
             column![
@@ -1263,6 +1279,23 @@ fn share<'a>(m: &'a Main, sources: &'a [jm_media::screen::Source]) -> El<'a> {
         column![
             head("Transmitir a tela", Some("Quem está na chamada vê o que você escolher. Funciona com o celular e com outro computador.")),
             row![text("Qualidade").size(13).color(t::FG_DIM), qualidades].spacing(12).align_y(Alignment::Center),
+            if jm_media::sysaudio::supported() {
+                El::from(
+                    row![
+                        column![
+                            text("Mandar o áudio do PC").size(14).color(t::FG),
+                            text("Som do jogo ou do vídeo. O som do J-Menseger não vai junto (ninguém ouve a própria voz de volta).").size(12).color(t::FG_DIM)
+                        ]
+                        .spacing(2)
+                        .width(Length::Fill),
+                        toggler(m.share_audio).on_toggle(Msg::ShareAudio).size(20)
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                )
+            } else {
+                text("Áudio do PC na transmissão: por enquanto só no Windows 10 (2004) ou mais novo.").size(12).color(t::FG_DIM).into()
+            },
             limited(m, lista.into()),
         ]
         .spacing(12)
