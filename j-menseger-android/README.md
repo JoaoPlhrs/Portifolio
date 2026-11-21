@@ -32,6 +32,17 @@ ambiente onde foi escrito. Esta pasta foi **reconstruída a partir do APK
 A chave de assinatura fica em `keystore/` (fora do git). **Guarde-a**: sem ela
 não dá para lançar atualizações que instalem por cima.
 
+## Novidades da 0.7.0-beta (iguais às do computador 0.6.0)
+
+- Responder e marcar como lida pela notificação (RemoteInput).
+- Arquivos até 5 MB, encaminhar, visualização única, prévia de links (busca
+  nativa em `LinkPreview.java`, sem endereços internos).
+- Poderes por cargo (fixar, apagar de outros, @todos), eventos com presença e
+  lembrete.
+- Volume por pessoa, status personalizado com Não perturbe, aparelhos
+  conectados com "Desconectar".
+- Estudo do iPhone: [ESTUDO-IPHONE.md](ESTUDO-IPHONE.md).
+
 ## Novidades da 0.6.0-beta (iguais às do computador 0.5.0)
 
 - Editar mensagem, fixar mensagens na conversa, buscar na conversa, enquetes,

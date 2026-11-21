@@ -53,8 +53,8 @@ AQUI="$(cd "$(dirname "$0")" && pwd)"
 DESTINO="${PREFIX:-$HOME/.local}"
 install -Dm755 "$AQUI/j-menseger"         "$DESTINO/bin/j-menseger"
 install -Dm644 "$AQUI/icone.png"          "$DESTINO/share/icons/hicolor/128x128/apps/j-menseger.png"
-sed "s|^Exec=.*|Exec=$DESTINO/bin/j-menseger|" "$AQUI/j-menseger.desktop" > "$DESTINO/share/applications/j-menseger.desktop" 2>/dev/null \
-  || { mkdir -p "$DESTINO/share/applications"; sed "s|^Exec=.*|Exec=$DESTINO/bin/j-menseger|" "$AQUI/j-menseger.desktop" > "$DESTINO/share/applications/j-menseger.desktop"; }
+mkdir -p "$DESTINO/share/applications"
+sed "s|^Exec=.*|Exec=$DESTINO/bin/j-menseger|" "$AQUI/j-menseger.desktop" > "$DESTINO/share/applications/j-menseger.desktop"
 update-desktop-database "$DESTINO/share/applications" 2>/dev/null || true
 echo "Pronto: o J-Menseger está no menu de aplicativos."
 echo "(programa em $DESTINO/bin/j-menseger)"
