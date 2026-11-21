@@ -1,6 +1,9 @@
-# J-Menseger 0.5.0-beta (Android) — guia para quem testa
+# J-Menseger 0.6.0-beta (Android) — guia para quem testa
 
-## ⚠️ Antes de instalar: esta versão NÃO instala por cima da 0.4
+> **Já tem a 0.5.0-beta?** A 0.6 instala por cima normalmente (mesma chave).
+> A partir da 0.6 o próprio app avisa quando sair versão nova.
+
+## ⚠️ Vindo da 0.4: NÃO instala por cima
 
 A chave que assinava as versões 0.3 e 0.4 se perdeu. O Android só atualiza
 um app assinado pela mesma chave, então:
@@ -8,7 +11,7 @@ um app assinado pela mesma chave, então:
 1. No app antigo: **Ajustes → Chave de recuperação** e anote as **12
    palavras** (no papel). Sem elas a conta não volta.
 2. Desinstale o J-Menseger antigo.
-3. Instale o `J-Menseger-0.5.0-beta.apk` e escolha **Restaurar** com as 12
+3. Instale o `J-Menseger-0.6.0-beta.apk` e escolha **Restaurar** com as 12
    palavras. Sua conta e seus contatos voltam; o histórico de conversas
    guardado só no celular antigo, não.
 

@@ -1,0 +1,17 @@
+{
+  "windows": {
+    "versao": "0.5.0",
+    "url": "https://j-menseger-site.vercel.app/downloads/J-Menseger-0.5.0-instalador.exe",
+    "sha256": "d9b9cb1178486bc467e8c6c89176e87476c921d871bb0f2a10277d01ed018ae5",
+    "tamanho": 38604288,
+    "novidades": "Câmera no PC, vídeo e tela nas salas de voz, tela do celular nas chamadas, editar e fixar mensagens, enquetes, @menções, cargos, online/ausente, busca na conversa, backup cifrado, mesma conta no PC e no celular, notificações com o app fechado e atualização automática."
+  },
+  "android": {
+    "versao": "0.6.0-beta",
+    "codigo": 6,
+    "url": "https://j-menseger-site.vercel.app/downloads/J-Menseger-0.6.0-beta.apk",
+    "sha256": "6bab526a3ef7a394c6901925b7a0b85f5ad22ae8750dfade8c027afffe01494d",
+    "tamanho": 727321,
+    "novidades": "Câmera no PC, vídeo e tela nas salas de voz, tela do celular nas chamadas, editar e fixar mensagens, enquetes, @menções, cargos, online/ausente, busca na conversa, backup cifrado, mesma conta no PC e no celular, notificações com o app fechado e atualização automática."
+  }
+}

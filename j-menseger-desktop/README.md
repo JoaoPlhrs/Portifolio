@@ -94,7 +94,7 @@ J_MENSEGER_DATA=/tmp/beto/jm.db J_MENSEGER_RELAYS=ws://127.0.0.1:7781 cargo run 
 ## Gerar o programa para Windows
 
 **Pronto para baixar:**
-[`packaging/windows/dist/J-Menseger-0.4.0-instalador.exe`](packaging/windows/dist/J-Menseger-0.4.0-instalador.exe).
+[`packaging/windows/dist/J-Menseger-0.5.0-instalador.exe`](packaging/windows/dist/J-Menseger-0.5.0-instalador.exe).
 
 É um arquivo só, e é o próprio programa. Com "instalador" no nome, ele abre
 o **instalador animado** (no estilo do Discord): janela sem bordas com luzes
@@ -135,7 +135,7 @@ export PKG_CONFIG_LIBDIR="$PWD/target/win-c/lib/pkgconfig"
 cargo build --release -p jm-app --target x86_64-pc-windows-gnu
 
 # O instalador é o mesmo programa, com "instalador" no nome.
-cp target/x86_64-pc-windows-gnu/release/j-menseger.exe J-Menseger-0.4.0-instalador.exe
+cp target/x86_64-pc-windows-gnu/release/j-menseger.exe J-Menseger-0.5.0-instalador.exe
 ```
 
 A busca de GIFs usa chaves do próprio aplicativo, embutidas ao compilar:
