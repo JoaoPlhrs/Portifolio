@@ -18,6 +18,13 @@ d = {
   "windows": {"versao": pc, "url": f"{base}/{os.path.basename(exe)}", "sha256": sha(exe), "tamanho": os.path.getsize(exe), "novidades": nov},
   "android": {"versao": an, "codigo": int(cod), "url": f"{base}/{os.path.basename(apk)}", "sha256": sha(apk), "tamanho": os.path.getsize(apk), "novidades": nov},
 }
+# Linux e Mac: ainda sem atualização automática, mas o app e o site já
+# sabem onde está a versão mais nova.
+for chave, nomes in (("linux", [f"J-Menseger-{pc}-linux-amd64.deb", f"J-Menseger-{pc}-linux-x86_64.tar.gz"]),
+                     ("mac", [f"J-Menseger-{pc}-macos-arm64.dmg", f"J-Menseger-{pc}-macos-x86_64.dmg"])):
+    arqs = [f"downloads/{n}" for n in nomes if os.path.exists(f"downloads/{n}")]
+    if arqs:
+        d[chave] = {"versao": pc, "arquivos": [{"url": f"{base}/{os.path.basename(a)}", "sha256": sha(a), "tamanho": os.path.getsize(a)} for a in arqs], "novidades": nov}
 open("versao.json", "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
 print(open("versao.json").read())
 PY
