@@ -1291,6 +1291,49 @@ impl Main {
             }
 
             /* ---------------------------------------------- chamadas */
+            Msg::UpdateCheck => {
+                self.update_at = Instant::now();
+                self.update_msg = Some("Procurando…".into());
+                Task::perform(
+                    async { tokio::task::spawn_blocking(crate::atualizar::procurar).await.map_err(|e| e.to_string()).and_then(|r| r) },
+                    Msg::UpdateFound,
+                )
+            }
+            Msg::UpdateFound(r) => {
+                match r {
+                    Ok(Some(p)) => {
+                        self.update_msg = None;
+                        self.update = Some(p);
+                    }
+                    Ok(None) => self.update_msg = Some(format!("Você está na versão mais nova ({}).", crate::atualizar::VERSAO)),
+                    Err(e) => self.update_msg = Some(e),
+                }
+                Task::none()
+            }
+            Msg::UpdateStart => {
+                let Some(p) = self.update.clone() else { return Task::none() };
+                if self.update_prog.is_some() {
+                    return Task::none();
+                }
+                let prog = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                self.update_prog = Some(Arc::clone(&prog));
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(move || crate::atualizar::baixar(&p, prog)).await.map_err(|e| e.to_string()).and_then(|r| r) },
+                    Msg::UpdateDownloaded,
+                )
+            }
+            Msg::UpdateDownloaded(r) => {
+                self.update_prog = None;
+                match r.and_then(|caminho| crate::atualizar::instalar(&caminho)) {
+                    // O instalador troca o programa e o abre de novo.
+                    Ok(()) => iced::exit(),
+                    Err(e) => {
+                        self.toast(e.clone());
+                        self.update_msg = Some(e);
+                        Task::none()
+                    }
+                }
+            }
             Msg::ToggleCamera => {
                 self.camera_wanted = false;
                 let c = Arc::clone(&self.calls);
@@ -2639,6 +2682,16 @@ impl Main {
             for mid in faltando {
                 tarefas.push(self.anim_from_media(mid));
             }
+        }
+        if self.update.is_none() && self.update_prog.is_none() && self.update_at.elapsed() >= Duration::from_secs(6 * 3600) {
+            self.update_at = Instant::now();
+            tarefas.push(Task::perform(
+                async { tokio::task::spawn_blocking(crate::atualizar::procurar).await.map_err(|e| e.to_string()).and_then(|r| r) },
+                |r| Msg::UpdateFound(r.map_err(|e| {
+                    tracing::info!("atualização: {e}");
+                    e
+                })),
+            ));
         }
         let vendo_perfil = self.section == Section::Settings && self.page == SettingsPage::Profile;
         if (self.listen_share || vendo_perfil) && !self.np_polling && self.np_at.elapsed() >= Duration::from_secs(5) {

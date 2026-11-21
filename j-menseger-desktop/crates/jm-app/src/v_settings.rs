@@ -904,7 +904,6 @@ fn storage(m: &Main) -> El<'_> {
 /* ------------------------------------------------------------ sobre */
 
 fn about(m: &Main) -> El<'_> {
-    let _ = m;
     frame(
         "Sobre o J-Menseger",
         None,
@@ -922,6 +921,13 @@ fn about(m: &Main) -> El<'_> {
             )
             .center_x(Length::Fill)
             .padding(10)
+            .into(),
+            row![
+                ui::secondary(Some(Icon::Refresh), "Procurar atualizações", Some(Msg::UpdateCheck)),
+                text(m.update.as_ref().map(|p| format!("Versão {} disponível: use o botão Atualizar na barra lateral.", p.versao)).or_else(|| m.update_msg.clone()).unwrap_or_default()).size(13).color(t::FG_DIM),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
             .into(),
             ui::label("Como sua privacidade é protegida"),
             column![

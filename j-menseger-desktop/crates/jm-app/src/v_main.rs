@@ -165,11 +165,43 @@ impl Main {
             Section::Settings => crate::v_settings::sidebar(self),
         };
         let mut col = column![container(corpo).height(Length::Fill)];
+        if let Some(p) = self.update_bar() {
+            col = col.push(p);
+        }
         if let Some(p) = crate::v_call::voice_panel(self) {
             col = col.push(p);
         }
         col = col.push(self.user_panel());
         container(col).width(SIDEBAR_W).height(Length::Fill).style(t::fill(t::sidebar())).into()
+    }
+
+    /// Aviso de versão nova, em cima do painel do usuário.
+    fn update_bar(&self) -> Option<El<'_>> {
+        let p = self.update.as_ref()?;
+        let corpo: El<'_> = match &self.update_prog {
+            Some(pr) => {
+                let v = pr.load(std::sync::atomic::Ordering::Relaxed) as f32 / 10.0;
+                column![
+                    text(format!("Baixando a versão {}… {:.0}%", p.versao, v)).size(13).color(t::FG),
+                    iced::widget::progress_bar(0.0..=100.0, v).girth(4),
+                ]
+                .spacing(6)
+                .into()
+            }
+            None => row![
+                column![
+                    text(format!("Versão {} disponível", p.versao)).size(13.5).font(SEMI).color(t::FG),
+                    text(if p.novidades.is_empty() { "Instala por cima, sem perder nada".to_string() } else { ui::ellipsis(&p.novidades, 60) }).size(11.5).color(t::FG_DIM),
+                ]
+                .spacing(1)
+                .width(Length::Fill),
+                ui::primary(Some(Icon::Download), "Atualizar", Some(Msg::UpdateStart)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        };
+        Some(container(corpo).padding([10, 12]).style(t::fill(t::mix(t::sidebar(), t::accent(), 0.12))).into())
     }
 
     fn user_panel(&self) -> El<'_> {

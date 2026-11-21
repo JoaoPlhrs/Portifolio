@@ -502,6 +502,12 @@ pub struct Main {
     pub local_preview: Option<(u64, image::Handle)>,
     /// Ligar a câmera assim que a chamada de vídeo conectar.
     pub camera_wanted: bool,
+    /// Atualização encontrada no site.
+    pub update: Option<crate::atualizar::Pacote>,
+    /// Progresso do download (milésimos), enquanto baixa.
+    pub update_prog: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    pub update_msg: Option<String>,
+    pub update_at: Instant,
     pub share_quality: Quality,
 
     pub modal: Option<Modal>,
@@ -611,6 +617,10 @@ impl Main {
             remote_frame: None,
             local_preview: None,
             camera_wanted: false,
+            update: None,
+            update_prog: None,
+            update_msg: None,
+            update_at: Instant::now() - Duration::from_secs(6 * 3600 - 8),
             share_quality: Quality::P1080,
             modal: None,
             popup: None,
