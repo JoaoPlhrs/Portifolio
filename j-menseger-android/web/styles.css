@@ -4418,3 +4418,67 @@ textarea.inp {
 /* barra de download da atualização */
 .upd-bar{height:6px;border-radius:99px;background:var(--line,rgba(255,255,255,.1));overflow:hidden;margin:10px 0 2px}
 .upd-bar>i{display:block;height:100%;background:var(--accent);border-radius:inherit;transition:width .25s ease}
+
+/* ===== Editar, fixar, buscar, enquetes, menções, online e cargos ===== */
+.edtag { font-style: normal; margin-right: 4px; opacity: .8; }
+.replybar.edit b { color: var(--accent-t); display: inline-flex; align-items: center; gap: 4px; }
+#pinbar:empty { display: none; }
+.pinbar {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px 14px; background: var(--s2); border: 0; border-bottom: 1px solid var(--line);
+  color: var(--fg); font: inherit; cursor: pointer;
+}
+.pinbar > .i { color: var(--accent-t); flex: none; }
+.pinbar span { flex: 1; min-width: 0; font-size: 13px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pinbar b { display: block; font-size: 12px; color: var(--accent-t); }
+.pinbar > i { font-style: normal; font-size: 12px; color: var(--fg2); padding: 4px 8px; border-radius: 99px; background: var(--s1); }
+.pinrow { display: flex; align-items: center; gap: 4px; }
+.pinrow .mitem { flex: 1; min-width: 0; }
+.mention { color: var(--accent-t); background: var(--accent-soft); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+.mention.me { color: #ffd54f; background: rgba(255, 213, 79, .16); }
+.msg.them.mentioned { box-shadow: inset 3px 0 0 #ffd54f; background: color-mix(in srgb, #ffd54f 9%, var(--mbg, var(--s2))); }
+#mentslot:empty { display: none; }
+.mentsug { display: flex; gap: 6px; overflow-x: auto; padding: 6px 2px 8px; scrollbar-width: none; }
+.mentsug button {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; border: 0; cursor: pointer;
+  padding: 5px 12px 5px 5px; border-radius: 99px; background: var(--s2); color: var(--fg); font: inherit; font-size: 13px; font-weight: 600;
+}
+.mentsug button > .i { margin-left: 4px; }
+.srchres { margin-top: 10px; max-height: 52vh; overflow-y: auto; }
+.srow { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 10px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.srow b { display: block; font-size: 13px; margin-bottom: 2px; }
+.srow b small { font-weight: 400; color: var(--fg2); }
+.srow span { font-size: 14px; color: var(--fg2); }
+.srow mark { background: var(--accent-soft); color: var(--accent-t); border-radius: 3px; padding: 0 1px; }
+.pres { display: inline-flex; align-items: center; gap: 5px; }
+.pres i { width: 8px; height: 8px; border-radius: 50%; background: #2fd47c; }
+.pres.away i { background: #fdd835; }
+.msg.pollm { min-width: 250px; }
+.poll { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px; }
+.poll .pq { font-weight: 700; font-size: 15px; display: flex; gap: 6px; align-items: center; }
+.poll .pm { color: color-mix(in srgb, var(--mfg, var(--fg)) 60%, transparent); font-size: 12px; }
+.popt {
+  position: relative; display: flex; align-items: center; gap: 8px; overflow: hidden; cursor: pointer;
+  padding: 9px 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent); color: inherit; font: inherit; text-align: left;
+}
+.popt .pbar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent) 24%, transparent); transition: width .35s ease; z-index: 0; }
+.popt > span { position: relative; z-index: 1; }
+.popt .pck { width: 18px; height: 18px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 40%, transparent); display: grid; place-items: center; flex: none; }
+.popt.on .pck { background: var(--accent); border-color: var(--accent); color: #041; }
+.popt .ptx { flex: 1; min-width: 0; }
+.popt .pn { font-weight: 700; font-size: 13px; }
+.pfoot { border: 0; background: none; color: inherit; opacity: .7; font: inherit; font-size: 12px; text-align: left; padding: 2px 0; cursor: pointer; }
+.voter { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.rolepill.cust { background: color-mix(in srgb, var(--rc) 20%, transparent); color: var(--rc); }
+.rdot { width: 14px; height: 14px; border-radius: 50%; flex: none; margin-right: 4px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0 14px; }
+.swatch { width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; }
+.swatch.on { border-color: var(--fg); box-shadow: 0 0 0 2px var(--s1) inset; }
+.rolechips { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0 10px; }
+.rchip {
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 99px; padding: 7px 14px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--rc) 50%, transparent); background: none; color: var(--fg); font: inherit; font-weight: 600;
+}
+.rchip i { width: 10px; height: 10px; border-radius: 50%; background: var(--rc); }
+.rchip.on { background: color-mix(in srgb, var(--rc) 22%, transparent); border-color: var(--rc); }

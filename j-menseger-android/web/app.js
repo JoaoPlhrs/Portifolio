@@ -9887,7 +9887,23 @@ zoo`.split(`
     }
     return e;
   }
-  function jmCleanListening(t) {
+  var JM_PRES_HEARTBEAT = 24e4, JM_PRES_TTL = 54e4;
+  /** Cargos do grupo: nome e cor, e quem tem cada um. Igual ao PC. */
+  function jmCleanRoles(t, e) {
+    let a = (Array.isArray(t.roles) ? t.roles : [])
+        .filter((s) => s && /^[a-z0-9]{1,12}$/.test(s.id))
+        .slice(0, 12)
+        .map((s) => ({ id: s.id, n: ie(s.n, 24) || "Cargo", c: Number.isInteger(s.c) ? ((s.c % 8) + 8) % 8 : 0 })),
+      n = {};
+    if (t.mroles && typeof t.mroles == "object")
+      for (let [s, o] of Object.entries(t.mroles))
+        if (Re.test(s) && e.includes(s) && Array.isArray(o)) {
+          let r = o.filter((i) => a.some((c) => c.id === i)).slice(0, 4);
+          r.length && (n[s] = r);
+        }
+    return a.length ? { roles: a, mroles: n } : {};
+  }
+    function jmCleanListening(t) {
     if (!t || typeof t != "object") return null;
     let e = (a, n) => String(a ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, n).trim(),
       a = e(t.s, 120);
@@ -9941,6 +9957,7 @@ zoo`.split(`
       vibrate: !0,
       lockScreenshots: !1,
       notifications: !0,
+      presence: !0,
     },
     Bd = {
       amigos: { text: ["geral", "fotos"], voice: ["Sala de estar"] },
@@ -10393,6 +10410,35 @@ zoo`.split(`
               Array.isArray(c.ids) &&
                 (await this.applyDelete(i, c.ids.slice(0, 100), n));
               return;
+            case "edit":
+              await this.applyEdit(i, c.id, c.x, n, e.created_at);
+              return;
+            case "pin":
+              await this.applyPin(i, c.id, !!c.on, n);
+              return;
+            case "poll":
+              s || (await this.ensureContact(o, "request")),
+                await this.addPoll(i, e, c, n, s);
+              return;
+            case "vote":
+              await this.applyVote(i, c.id, c.v, n);
+              return;
+            case "pres":
+              if (s || !a.eph || !r || r.status !== "ok") return;
+              this.presence || (this.presence = new Map());
+              {
+                let l = this.presence.get(o),
+                  u = !l || Date.now() - l.at > JM_PRES_TTL;
+                u &&
+                  c.s !== "off" &&
+                  this.myPres &&
+                  this.myPres.s !== "off" &&
+                  this.sendApp(i, { t: "pres", s: this.myPres.s }, { ephemeral: !0, selfCopy: !1, noTtl: !0 }).catch(() => {});
+              }
+              this.presence.set(o, { s: c.s === "away" ? "away" : c.s === "off" ? "off" : "on", at: Date.now() }),
+                this.emit("presence", o),
+                this.emit("contact", r);
+              return;
             case "ttl": {
               let l = Math.max(0, Math.min(28 * Za, parseInt(c.v, 10) || 0)),
                 u = this.chatFor(i);
@@ -10620,6 +10666,18 @@ zoo`.split(`
               Array.isArray(d.ids) &&
               (await this.applyDelete(l, d.ids.slice(0, 100), s));
             return;
+          case "edit":
+            l && !u && (await this.applyEdit(l, d.id, d.x, s, e.created_at));
+            return;
+          case "pin":
+            l && !u && f(s) && (await this.applyPin(l, d.id, !!d.on, s));
+            return;
+          case "poll":
+            l && !u && (await this.addPoll(l, e, d, s, o));
+            return;
+          case "vote":
+            l && !u && (await this.applyVote(l, d.id, d.v, s));
+            return;
           case "room":
             n.eph &&
               !o &&
@@ -10687,6 +10745,8 @@ zoo`.split(`
                   : "Foto";
           case "sound":
             return "Som do soundboard";
+          case "poll":
+            return "Enquete: " + ((e.poll && e.poll.q) || "");
           case "invite":
             return (
               "Convite para " +
@@ -10966,6 +11026,99 @@ zoo`.split(`
           { noTtl: !0 },
         );
         await this.publish(o.rumor.id, o.wraps, o.relays);
+      }
+      /** Edição de texto: só quem escreveu edita, e só mensagens de texto. */
+      async applyEdit(e, a, n, s, o) {
+        if (typeof a != "string" || !Re.test(a)) return;
+        let r = ie(n, 6e3);
+        if (!r) return;
+        let i = await this.db.get("msgs", a);
+        if (!i || i.chat !== e || i.from !== s || i.kind !== "text") return;
+        let c = (o || be()) * 1e3;
+        if (i.edited && i.edited > c) return;
+        (i.text = r), (i.edited = c), await this.db.put("msgs", i);
+        let l = this.chats.get(e);
+        l && l.lastId === a && ((l.lastText = r), await this.saveChat(l)),
+          this.emit("msgUpdate", e, i);
+      }
+      async editMsg(e, a, n) {
+        let s = await this.db.get("msgs", a);
+        if (((n = String(n || "").trim().slice(0, 6e3)), !s || s.from !== this.pk || s.kind !== "text" || !n || n === s.text)) return;
+        await this.applyEdit(e, a, n, this.pk, be()),
+          await this.sendApp(e, { t: "edit", id: a, x: n }, { noTtl: !0 });
+      }
+      /** Mensagens fixadas ficam na conversa (as 50 mais recentes). */
+      async applyPin(e, a, n, s) {
+        if (typeof a != "string" || !Re.test(a)) return;
+        let o = this.chatFor(e),
+          r = (o.pins || []).filter((i) => i !== a);
+        n && r.unshift(a), (o.pins = r.slice(0, 50)), await this.saveChat(o), this.emit("pins", e);
+      }
+      async setPin(e, a, n) {
+        await this.applyPin(e, a, n, this.pk),
+          await this.sendApp(e, { t: "pin", id: a, on: n ? 1 : 0 }, { noTtl: !0 });
+      }
+      /** Enquete: pergunta, de 2 a 10 opções, e se aceita mais de uma resposta. */
+      async addPoll(e, a, n, s, o) {
+        let r = ie(n.q, 200),
+          i = (Array.isArray(n.o) ? n.o : []).map((c) => ie(c, 80)).filter(Boolean).slice(0, 10);
+        !r ||
+          i.length < 2 ||
+          (await this.addMsg(
+            e,
+            {
+              id: a.id,
+              from: s,
+              kind: "poll",
+              poll: { q: r, o: i, m: n.m ? 1 : 0 },
+              votes: {},
+              ts: a.created_at * 1e3,
+              exp: this.expOf(a),
+              status: o ? "sent" : void 0,
+            },
+            !o,
+          ));
+      }
+      async sendPoll(e, a, n, s) {
+        let o = { t: "poll", q: ie(a, 200), o: n.map((i) => ie(i, 80)).filter(Boolean).slice(0, 10), m: s ? 1 : 0 };
+        if (!o.q || o.o.length < 2) return null;
+        let r = this.build(e, jt, JSON.stringify(o));
+        return (
+          await this.ensureDmContact(e),
+          this.localSend(e, { id: r.rumor.id, from: this.pk, kind: "poll", poll: { q: o.q, o: o.o, m: o.m }, votes: {}, ts: r.rumor.created_at * 1e3 }, r)
+        );
+      }
+      async applyVote(e, a, n, s) {
+        if (typeof a != "string" || !Re.test(a)) return;
+        let o = await this.db.get("msgs", a);
+        if (!o || o.chat !== e || o.kind !== "poll") return;
+        let r = [...new Set((Array.isArray(n) ? n : []).filter((i) => Number.isInteger(i) && i >= 0 && i < o.poll.o.length))];
+        o.poll.m || (r = r.slice(0, 1)),
+          (o.votes = o.votes || {}),
+          r.length ? (o.votes[s] = r) : delete o.votes[s],
+          await this.db.put("msgs", o),
+          this.emit("msgUpdate", e, o);
+      }
+      async vote(e, a, n) {
+        await this.applyVote(e, a, n, this.pk),
+          await this.sendApp(e, { t: "vote", id: a, v: n }, { noTtl: !0 });
+      }
+      /** Online / ausente: só entre contatos aceitos, e só se a pessoa deixar. */
+      presenceOf(e) {
+        if (!this.settings.presence) return null;
+        let a = this.presence && this.presence.get(e);
+        return !a || Date.now() - a.at > JM_PRES_TTL || a.s === "off" ? null : a.s;
+      }
+      async setPresence(e, a = !1) {
+        let n = this.settings.presence ? e : "off",
+          s = Date.now();
+        if (!a && this.myPres && this.myPres.s === n && s - this.myPres.at < JM_PRES_HEARTBEAT) return;
+        if (n === "off" && (!this.myPres || this.myPres.s === "off") && !a) return;
+        this.myPres = { s: n, at: s };
+        for (let o of [...this.contacts.values()].filter((r) => r.status === "ok"))
+          try {
+            await this.sendApp("dm:" + o.pk, { t: "pres", s: n }, { ephemeral: !0, selfCopy: !1, noTtl: !0 });
+          } catch {}
       }
       async deleteForAll(e, a) {
         await this.applyDelete(e, a, this.pk),
@@ -11521,6 +11674,7 @@ zoo`.split(`
             .slice(0, 10),
           members: s,
           names: r,
+          ...jmCleanRoles(e, s),
         };
       }
       parseInvite(e) {
@@ -11748,6 +11902,30 @@ zoo`.split(`
             : (n.meta.admins || []).filter(
                 (i) => i !== o && i !== n.meta.owner,
               );
+        }
+        if (a.addRole) {
+          let o = (n.meta.roles = n.meta.roles || []);
+          o.length < 12 &&
+            o.push({ id: Ka(4).slice(0, 8), n: ie(a.addRole.n, 24) || "Cargo", c: (a.addRole.c | 0) % 8 });
+        }
+        if (a.editRole) {
+          let o = (n.meta.roles || []).find((r) => r.id === a.editRole.id);
+          o &&
+            (a.editRole.n !== void 0 && (o.n = ie(a.editRole.n, 24) || o.n),
+            a.editRole.c !== void 0 && (o.c = (a.editRole.c | 0) % 8));
+        }
+        if (a.removeRole) {
+          n.meta.roles = (n.meta.roles || []).filter((o) => o.id !== a.removeRole);
+          for (let o of Object.keys(n.meta.mroles || {}))
+            (n.meta.mroles[o] = n.meta.mroles[o].filter((r) => r !== a.removeRole)),
+              n.meta.mroles[o].length || delete n.meta.mroles[o];
+        }
+        if (a.memberRole) {
+          let { pk: o, id: r, on: i } = a.memberRole,
+            c = (n.meta.mroles = n.meta.mroles || {}),
+            l = (c[o] || []).filter((u) => u !== r);
+          i && (n.meta.roles || []).some((u) => u.id === r) && l.length < 4 && l.push(r),
+            l.length ? (c[o] = l) : delete c[o];
         }
         n.ver++, await this.saveGroup(n), await this.publishMeta(n);
         for (let o of s)
@@ -16156,6 +16334,7 @@ zoo`.split(`
     let s = J.open(
       "chat",
       `<header class="chathead">${Tu()}</header>
+    <div id="pinbar"></div>
     <div class="msgs" id="msgs"></div>
     <div id="cfoot">${Ri()}</div>
     <div class="popbar" id="pop" hidden></div>`,
@@ -16170,6 +16349,7 @@ zoo`.split(`
       ((C.msgs = r),
       (C.more = r.length >= xo),
       Zt({ end: !0, intro: !0 }),
+      jmPinBar(),
       a.setActive(t, h.visible),
       X.cancelNotify(t),
       P.refreshLists(),
@@ -16207,6 +16387,9 @@ zoo`.split(`
         return {
           html: `<span class="lstat">${x("music", "xs")} Ouvindo ${M(lis.s)}${lis.a ? " \u2014 " + M(lis.a) : ""}</span>`,
         };
+      let jmPr = t.presenceOf && t.presenceOf(e.pk);
+      if (jmPr)
+        return { live: jmPr === "on", html: `<span class="pres ${jmPr}"><i></i>${jmPr === "on" ? "online" : "ausente"}</span>` };
       return o && o.status === "request"
         ? { html: "Fora dos seus contatos" }
         : e.ttl
@@ -16253,7 +16436,7 @@ zoo`.split(`
       if (a && a.status === "blocked")
         return '<div class="reqbar"><p>Voc\xEA bloqueou este contato.</p><div class="two"><button class="btn" data-act="reqUnblock">Desbloquear</button></div></div>';
     }
-    return `<div class="composer" id="composer"><div id="replyslot"></div><div id="cbody">${Ii()}</div></div>`;
+    return `<div class="composer" id="composer"><div id="mentslot"></div><div id="replyslot"></div><div id="cbody">${Ii()}</div></div>`;
   }
   function Ii() {
     return C && C.rec
@@ -16327,6 +16510,7 @@ zoo`.split(`
   function x0(t) {
     let e = h.engine;
     if (t.kind === "deleted") return `${x("ban", "xs")} Mensagem apagada`;
+    if (t.kind === "poll") return jmPollHtml(t);
     if (t.kind === "sound") {
       let a = kt(t.snd) || { id: t.snd, e: "\u{1F50A}", n: "Som" };
       return `<div class="snd"><span class="semo">${M(a.e)}</span><div class="stx"><b>${M(a.n)}</b><small>${x("wave", "xs")} Soundboard</small></div><button class="pbtn" data-act="playSnd" data-id="${M(a.id)}" aria-label="Tocar ${M(a.n)}">${x("play")}</button></div>`;
@@ -16365,7 +16549,7 @@ zoo`.split(`
           : `Recebendo ${a.got || 0}/${a.n}`;
       return `<span class="photo" style="${c}"><span class="ph" style="${a.th ? `background-image:url(${a.th})` : ""}"></span><span class="dl"><span>${a.err ? x("alert", "xs") : '<span class="spin"></span>'}${M(l)}</span></span></span>`;
     }
-    return Od(t.text || "");
+    return jmMentionHtml(Od(t.text || ""), C && C.chat);
   }
   function Bu(t, e, a, n = {}) {
     let s = h.engine;
@@ -16401,7 +16585,8 @@ zoo`.split(`
             : (q.meta.admins || []).includes(t.from)
               ? "Admin"
               : "");
-      f = `<div class="mname ${K ? "role" : ""}">${M(ne(t.from))}${K ? `<span class="rolepill">${K}</span>` : ""}</div>`;
+      let rc = q && jmRolesOf(q, t.from)[0];
+      f = `<div class="mname ${K ? "role" : ""}" ${rc ? `style="color:${JM_ROLE_CORES[rc.c]}"` : ""}>${M(ne(t.from))}${K ? `<span class="rolepill">${K}</span>` : ""}</div>`;
     }
     let p = "";
     if (t.reply) {
@@ -16430,6 +16615,8 @@ zoo`.split(`
         i ? "me" : "them",
         t.kind === "deleted" ? "del" : "",
         k ? "emoji" : "",
+        !i && d && t.kind === "text" && jmMentionsMe(t.text, C.chat) ? "mentioned" : "",
+        t.kind === "poll" ? "pollm" : "",
         t.kind === "media" && t.media.type === "image" ? "img" : "",
       ].join(" "),
       N =
@@ -16438,7 +16625,7 @@ zoo`.split(`
             ? pe(t.from, 28, { badge: !1 })
             : '<span class="mslot"></span>'
           : "",
-      V = `<span class="meta">${t.exp ? x("timer", "timer") : ""}${so(t.ts)}${m0(t)}</span>`;
+      V = `<span class="meta">${t.edited && t.kind === "text" ? '<i class="edtag">editada</i>' : ""}${t.exp ? x("timer", "timer") : ""}${so(t.ts)}${m0(t)}</span>`;
     return `<div class="${["mrow", i ? "me" : "them", l ? "first" : "", u ? "last" : "", n.fresh ? "newm" : ""].join(" ")}" data-mid="${t.id}">${N}<div class="${L}" data-act="msgTap" data-id="${t.id}">${f}${p}${x0(t)}${V}${v}</div></div>`;
   }
   function Zt(t = {}) {
@@ -16581,7 +16768,15 @@ zoo`.split(`
     if (!C) return;
     let t = y("#msgin", C.el),
       e = t ? t.value.trim() : "";
+    if (!e && C.edit) return jmEditCancel();
     if (!e) return _u();
+    if (C.edit) {
+      let r = C.edit.id;
+      return (
+        (t.value = ""), vo(t), wo(), jmEditCancel(),
+        h.engine.editMsg(C.key, r, e).catch(() => _("N\xE3o foi poss\xEDvel editar."))
+      );
+    }
     let a = C.reply,
       jmFoco = document.activeElement === t;
     (t.value = ""),
@@ -16790,7 +16985,7 @@ zoo`.split(`
       (i
         ? `<button style="--i:7" data-act="copyMsg" aria-label="Copiar">${x("copy", "sm")}</button>`
         : "") +
-      `<button style="--i:8" data-act="delMsg" aria-label="Apagar">${x("trash", "sm")}</button>`),
+      `<button style="--i:8" data-act="msgMore" aria-label="Mais op\xE7\xF5es">${x("more", "sm")}</button>`),
       (s.hidden = !1);
     let c = e.getBoundingClientRect(),
       l = o.getBoundingClientRect(),
@@ -16825,6 +17020,340 @@ zoo`.split(`
     },
     !0,
   );
+  // ===== Recursos menores: editar, fixar, buscar, enquetes, menções, online e cargos =====
+  var JM_ROLE_CORES = ["#ef5350", "#ff9800", "#fdd835", "#4caf50", "#26a69a", "#42a5f5", "#ab47bc", "#ec407a"];
+  function jmRolesOf(t, e) {
+    let a = ((t.meta.mroles || {})[e] || []);
+    return (t.meta.roles || []).filter((n) => a.includes(n.id));
+  }
+  function jmMyNames(t) {
+    let e = h.engine,
+      a = [(e.me && e.me.name) || ""];
+    if (t && t.kind === "group") {
+      let n = e.groups.get(t.lid);
+      n && n.meta.names && n.meta.names[e.pk] && a.push(n.meta.names[e.pk]);
+    }
+    return a.map((n) => n.trim().toLowerCase()).filter(Boolean);
+  }
+  function jmMentionsMe(t, e) {
+    if (!t || !e || e.kind !== "group") return !1;
+    let a = String(t).toLowerCase();
+    return /(^|\s)@(todos|everyone)\b/.test(a) || jmMyNames(e).some((n) => a.includes("@" + n));
+  }
+  var jmRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function jmMentionHtml(t, e) {
+    if (!e || e.kind !== "group" || t.indexOf("@") < 0) return t;
+    let a = h.engine.groups.get(e.lid);
+    if (!a) return t;
+    let n = jmMyNames(e),
+      s = [...new Set([...a.meta.members.map((o) => ne(o)), "todos"])].filter(Boolean).sort((o, r) => r.length - o.length);
+    for (let o of s) {
+      let r = new RegExp("(^|[\\s>(])@(" + jmRx(M(o)) + ")(?![\\p{L}\\p{N}])", "giu"),
+        i = o === "todos" || n.includes(o.toLowerCase());
+      t = t.replace(r, (c, l, u) => `${l}<span class="mention ${i ? "me" : ""}">@${u}</span>`);
+    }
+    return t;
+  }
+  // Sugestões ao digitar @ num grupo
+  function jmMentionSuggest(t) {
+    let e = y("#mentslot", C && C.el);
+    if (!e) return;
+    if (!C || C.chat.kind !== "group") return void (e.innerHTML = "");
+    let a = t.value.slice(0, t.selectionStart || t.value.length).match(/(^|\s)@([^\s@]{0,20})$/);
+    if (!a) return void (e.innerHTML = "");
+    let n = a[2].toLowerCase(),
+      s = h.engine.groups.get(C.chat.lid);
+    if (!s) return;
+    let o = s.meta.members
+      .filter((r) => r !== h.engine.pk)
+      .map((r) => ({ pk: r, n: ne(r) }))
+      .filter((r) => r.n.toLowerCase().includes(n))
+      .slice(0, 5);
+    "todos".startsWith(n) && o.push({ pk: "", n: "todos" }),
+      (e.innerHTML = o.length
+        ? `<div class="mentsug">${o.map((r) => `<button data-act="mentPick" data-n="${M(r.n)}">${r.pk ? pe(r.pk, 22, { badge: !1 }) : x("users", "xs")}<span>${M(r.n)}</span></button>`).join("")}</div>`
+        : "");
+  }
+  document.addEventListener("input", (t) => {
+    t.target.id === "msgin" && jmMentionSuggest(t.target);
+  });
+  b("mentPick", (t) => {
+    let e = y("#msgin", C.el);
+    if (!e) return;
+    let a = e.selectionStart || e.value.length,
+      n = e.value.slice(0, a).replace(/@([^\s@]{0,20})$/, "@" + t.dataset.n + " ");
+    (e.value = n + e.value.slice(a)), e.setSelectionRange(n.length, n.length), e.focus({ preventScroll: !0 }), vo(e), wo(), jmMentionSuggest(e);
+  });
+  // Mais opções da mensagem
+  function jmCanPin() {
+    if (!C) return !1;
+    if (C.chat.kind === "dm") return !0;
+    let t = h.engine.groups.get(C.chat.lid);
+    return !!t && cn(t, h.engine.pk);
+  }
+  b("msgMore", () => {
+    let t = C.msgs.find((o) => o.id === C.pop);
+    if (($t(), !t)) return;
+    let e = h.engine,
+      a = t.from === e.pk && t.kind === "text",
+      n = jmCanPin() && t.kind !== "deleted",
+      s = (e.chatFor(C.key).pins || []).includes(t.id);
+    ee(`<div class="mlist">
+    ${a ? `<button class="mitem" data-act="editStart" data-id="${t.id}">${x("edit")}Editar</button>` : ""}
+    ${n ? `<button class="mitem" data-act="pinMsg" data-id="${t.id}" data-on="${s ? 0 : 1}">${x("pin")}${s ? "Desafixar" : "Fixar na conversa"}</button>` : ""}
+    ${t.kind === "poll" ? `<button class="mitem" data-act="pollWho" data-id="${t.id}">${x("users")}Ver quem votou</button>` : ""}
+    <button class="mitem danger" data-act="delMsgId" data-id="${t.id}">${x("trash")}Apagar</button></div>`);
+  });
+  b("delMsgId", (t) => {
+    F();
+    let e = t.dataset.id;
+    setTimeout(() => {
+      C && ((C.pop = e), vt.delMsg());
+    }, 260);
+  });
+  b("editStart", (t) => {
+    F();
+    let e = C.msgs.find((n) => n.id === t.dataset.id);
+    if (!e) return;
+    (C.edit = { id: e.id }), (C.reply = null);
+    y("#replyslot", C.el).innerHTML = `<div class="replybar edit"><div><b>${x("edit", "xs")} Editando mensagem</b>${M(e.text).slice(0, 140)}</div><button class="ibtn sm" data-act="cancelEdit" aria-label="Cancelar edi\xE7\xE3o">${x("x")}</button></div>`;
+    let a = y("#msgin", C.el);
+    a && ((a.value = e.text), vo(a), wo(), setTimeout(() => a.focus(), 280));
+  });
+  function jmEditCancel() {
+    C && ((C.edit = null), (y("#replyslot", C.el).innerHTML = ""));
+  }
+  b("pinMsg", async (t) => {
+    F();
+    let e = t.dataset.on === "1";
+    await h.engine.setPin(C.key, t.dataset.id, e), _(e ? "Mensagem fixada" : "Mensagem desafixada");
+  });
+  async function jmPinBar() {
+    if (!C) return;
+    let t = y("#pinbar", C.el);
+    if (!t) return;
+    let e = h.engine,
+      a = e.chatFor(C.key).pins || [],
+      n = null;
+    for (let s of a) {
+      let o = C.msgs.find((r) => r.id === s) || (await e.db.get("msgs", s));
+      if (o && o.chat === C.key && o.kind !== "deleted") {
+        n = o;
+        break;
+      }
+    }
+    t.innerHTML = n
+      ? `<button class="pinbar" data-act="pinJump" data-id="${n.id}">${x("pin", "sm")}<span><b>Mensagem fixada${a.length > 1 ? ` \xB7 ${a.length}` : ""}</b>${M(e.preview(n)).slice(0, 120)}</span>${a.length > 1 ? `<i data-act="pinsOpen">Ver todas</i>` : ""}</button>`
+      : "";
+  }
+  b("pinJump", (t, e) => {
+    e && e.target.closest('[data-act="pinsOpen"]') ? vt.pinsOpen() : jmJump(t.dataset.id);
+  });
+  b("pinsOpen", async () => {
+    F();
+    let t = h.engine,
+      e = t.chatFor(C.key).pins || [],
+      a = [];
+    for (let s of e) {
+      let o = await t.db.get("msgs", s);
+      o && o.chat === C.key && o.kind !== "deleted" && a.push(o);
+    }
+    let n = jmCanPin();
+    setTimeout(
+      () =>
+        ee(`<h2 class="sh-title">Mensagens fixadas</h2>${a.length ? `<div class="mlist">${a
+          .map(
+            (s) => `<div class="pinrow"><button class="mitem" data-act="pinGo" data-id="${s.id}"><span><b>${M(s.from === t.pk ? "Voc\xEA" : ne(s.from))}</b><small>${M(t.preview(s)).slice(0, 160)}</small></span></button>${n ? `<button class="ibtn sm" data-act="pinMsg" data-id="${s.id}" data-on="0" aria-label="Desafixar">${x("x")}</button>` : ""}</div>`,
+          )
+          .join("")}</div>` : `<p class="sh-sub">Nenhuma mensagem fixada. Toque numa mensagem, depois em ${x("more", "xs")} e em “Fixar na conversa”.</p>`}`),
+      200,
+    );
+  });
+  b("pinGo", (t) => {
+    F(), jmJump(t.dataset.id);
+  });
+  async function jmJump(t) {
+    if (!C) return;
+    if (!C.msgs.some((a) => a.id === t)) {
+      let a = await h.engine.messages(C.key, 1 / 0, 3e3);
+      if (!a.some((n) => n.id === t)) return _("Essa mensagem n\xE3o est\xE1 mais neste aparelho");
+      (C.msgs = a), (C.more = a.length >= 3e3), Zt({ keep: !0 });
+    }
+    setTimeout(() => vt.jumpTo({ dataset: { id: t } }), 60);
+  }
+  // Buscar na conversa
+  var jmNorm = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  b("chatSearch", async () => {
+    F();
+    let t = await h.engine.messages(C.key, 1 / 0, 5e3);
+    (C.searchAll = t.filter((e) => e.kind === "text" || e.kind === "poll")),
+      setTimeout(() => {
+        ee(`<h2 class="sh-title">Buscar na conversa</h2><input class="inp" id="srchin" placeholder="Digite uma palavra" autocomplete="off" enterkeyhint="search"><div id="srchres" class="srchres"><p class="sh-sub">${C.searchAll.length} mensagens de texto neste aparelho.</p></div>`);
+        setTimeout(() => {
+          let e = y("#srchin");
+          e && e.focus();
+        }, 380);
+      }, 200);
+  });
+  document.addEventListener("input", (t) => {
+    if (t.target.id !== "srchin" || !C) return;
+    let e = jmNorm(t.target.value.trim()),
+      a = y("#srchres");
+    if (!a) return;
+    if (e.length < 2) return void (a.innerHTML = '<p class="sh-sub">Digite pelo menos 2 letras.</p>');
+    let n = (C.searchAll || []).filter((s) => jmNorm(s.text || (s.poll && s.poll.q)).includes(e)).reverse().slice(0, 60);
+    a.innerHTML = n.length
+      ? n
+          .map((s) => {
+            let o = s.text || s.poll.q,
+              r = jmNorm(o).indexOf(e),
+              i = Math.max(0, r - 30),
+              c = (i ? "…" : "") + o.slice(i, r) + "\u0001" + o.slice(r, r + e.length) + "\u0002" + o.slice(r + e.length, r + e.length + 80);
+            return `<button class="srow" data-act="pinGo" data-id="${s.id}"><b>${M(s.from === h.engine.pk ? "Voc\xEA" : ne(s.from))} <small>${M(_d(s.ts))} ${so(s.ts)}</small></b><span>${M(c).replace("\u0001", "<mark>").replace("\u0002", "</mark>")}</span></button>`;
+          })
+          .join("")
+      : '<p class="sh-sub">Nada encontrado.</p>';
+  });
+  // Enquetes
+  function jmPollHtml(t) {
+    let e = h.engine,
+      a = t.poll || { q: "", o: [] },
+      n = t.votes || {},
+      s = Object.keys(n).length,
+      o = a.o.map(() => 0);
+    for (let i of Object.values(n)) for (let c of i) o[c] != null && o[c]++;
+    let r = n[e.pk] || [];
+    return `<div class="poll"><div class="pq">${x("checks", "xs")} ${M(a.q)}</div><small class="pm">${a.m ? "Escolha uma ou mais op\xE7\xF5es" : "Escolha uma op\xE7\xE3o"}</small>
+    ${a.o
+      .map((i, c) => {
+        let l = s ? Math.round((o[c] * 100) / s) : 0,
+          u = r.includes(c);
+        return `<button class="popt ${u ? "on" : ""}" data-act="pollVote" data-id="${t.id}" data-i="${c}"><i class="pbar" style="width:${l}%"></i><span class="pck">${u ? x("check", "xs") : ""}</span><span class="ptx">${M(i)}</span><span class="pn">${o[c]}</span></button>`;
+      })
+      .join("")}<button class="pfoot" data-act="pollWho" data-id="${t.id}">${s} ${s === 1 ? "voto" : "votos"} \xB7 ver quem votou</button></div>`;
+  }
+  b("pollVote", async (t) => {
+    let e = C.msgs.find((o) => o.id === t.dataset.id);
+    if (!e) return;
+    let a = +t.dataset.i,
+      n = (e.votes || {})[h.engine.pk] || [],
+      s = e.poll.m ? (n.includes(a) ? n.filter((o) => o !== a) : [...n, a].sort()) : n.includes(a) ? [] : [a];
+    X.vibrate(10), await h.engine.vote(C.key, e.id, s);
+  });
+  b("pollWho", async (t) => {
+    F();
+    let e = C.msgs.find((n) => n.id === t.dataset.id) || (await h.engine.db.get("msgs", t.dataset.id));
+    if (!e) return;
+    let a = e.votes || {};
+    setTimeout(
+      () =>
+        ee(`<h2 class="sh-title">${M(e.poll.q)}</h2>${e.poll.o
+          .map((n, s) => {
+            let o = Object.entries(a).filter(([, r]) => r.includes(s)).map(([r]) => r);
+            return `<div class="label" style="padding-left:0">${M(n)} \xB7 ${o.length}</div>${o.length ? o.map((r) => `<div class="voter">${pe(r, 28, { badge: !1 })}<span>${M(r === h.engine.pk ? "Voc\xEA" : ne(r))}</span></div>`).join("") : '<p class="sh-sub">Ningu\xE9m ainda</p>'}`;
+          })
+          .join("")}`),
+      200,
+    );
+  });
+  b("pollNew", () => {
+    F(),
+      setTimeout(
+        () =>
+          ee(`<h2 class="sh-title">Nova enquete</h2>
+    <label class="lbl" for="pq">Pergunta</label><input class="inp" id="pq" maxlength="200" placeholder="Ex.: Que dia fica melhor?" autocomplete="off">
+    <span class="lbl">Op\xE7\xF5es</span><div id="popts"><input class="inp popin" maxlength="80" placeholder="Op\xE7\xE3o 1" autocomplete="off"><input class="inp popin" maxlength="80" placeholder="Op\xE7\xE3o 2" autocomplete="off"></div>
+    <button class="btn ghost" data-act="pollAddOpt" style="margin-top:6px">${x("plus", "sm")}&nbsp;Adicionar op\xE7\xE3o</button>
+    <label class="pick" style="padding:12px 2px"><span style="flex:1">Permitir mais de uma resposta</span><input type="checkbox" id="pmulti"></label>
+    <div class="errtx" id="perr" hidden>Escreva a pergunta e pelo menos duas op\xE7\xF5es.</div>
+    <button class="btn" data-act="pollSend">Enviar enquete</button>`),
+        200,
+      );
+  });
+  b("pollAddOpt", () => {
+    let t = y("#popts"),
+      e = oe(".popin", t).length;
+    if (e >= 10) return _("No m\xE1ximo 10 op\xE7\xF5es");
+    t.insertAdjacentHTML("beforeend", `<input class="inp popin" maxlength="80" placeholder="Op\xE7\xE3o ${e + 1}" autocomplete="off">`), t.lastElementChild.focus();
+  });
+  b("pollSend", async () => {
+    let t = y("#pq").value.trim(),
+      e = oe(".popin").map((a) => a.value.trim()).filter(Boolean);
+    if (!t || e.length < 2) return void (y("#perr").hidden = !1);
+    F();
+    try {
+      await h.engine.sendPoll(C.key, t, e, y("#pmulti") && y("#pmulti").checked);
+    } catch (a) {
+      _(a.message || "N\xE3o foi poss\xEDvel enviar a enquete.");
+    }
+  });
+  // Online / ausente
+  function jmPresTick(t = !1) {
+    let e = h.engine;
+    e && e.pool && e.setPresence(document.hidden ? "away" : "on", t).catch(() => {});
+  }
+  document.addEventListener("visibilitychange", () => jmPresTick(!0));
+  // Cargos do grupo
+  function jmRolesSheet() {
+    let t = h.engine.groups.get(se.lid);
+    if (!t) return;
+    let e = cn(t, h.engine.pk),
+      a = t.meta.roles || [];
+    ee(`<h2 class="sh-title">Cargos</h2><p class="sh-sub">Cargos d\xE3o nome e cor \xE0s pessoas do grupo. ${e ? "Toque num cargo para editar; para dar um cargo, toque na pessoa em Membros." : "S\xF3 admins criam e d\xE3o cargos."}</p>
+    <div class="mlist">${a.length ? a.map((n) => {
+      let s = Object.values(t.meta.mroles || {}).filter((o) => o.includes(n.id)).length;
+      return `<button class="mitem" ${e ? `data-act="roleEdit" data-id="${n.id}"` : ""}><i class="rdot" style="background:${JM_ROLE_CORES[n.c]}"></i><span>${M(n.n)}<small>${s} ${s === 1 ? "pessoa" : "pessoas"}</small></span></button>`;
+    }).join("") : '<p class="sh-sub">Nenhum cargo ainda.</p>'}</div>
+    ${e && a.length < 12 ? `<button class="btn" data-act="roleEdit" data-id="">${x("plus", "sm")}&nbsp;Novo cargo</button>` : ""}`);
+  }
+  b("rolesOpen", () => jmRolesSheet());
+  var jmRoleCor = 0;
+  b("roleEdit", (t) => {
+    let e = h.engine.groups.get(se.lid),
+      a = (e.meta.roles || []).find((n) => n.id === t.dataset.id);
+    (jmRoleCor = a ? a.c : (e.meta.roles || []).length % 8),
+      F(),
+      setTimeout(
+        () =>
+          ee(`<h2 class="sh-title">${a ? "Editar cargo" : "Novo cargo"}</h2>
+    <label class="lbl" for="rname">Nome</label><input class="inp" id="rname" maxlength="24" placeholder="Ex.: Moderador" value="${a ? M(a.n) : ""}" autocomplete="off">
+    <span class="lbl">Cor</span><div class="swatches">${JM_ROLE_CORES.map((n, s) => `<button class="swatch ${s === jmRoleCor ? "on" : ""}" data-act="roleColor" data-c="${s}" style="background:${n}" aria-label="Cor ${s + 1}"></button>`).join("")}</div>
+    <button class="btn" data-act="roleSave" data-id="${a ? a.id : ""}">Salvar</button>
+    ${a ? `<button class="btn ghost danger" data-act="roleDel" data-id="${a.id}">Apagar cargo</button>` : ""}`),
+        200,
+      );
+  });
+  b("roleColor", (t) => {
+    (jmRoleCor = +t.dataset.c), oe(".swatch").forEach((e) => e.classList.toggle("on", e === t));
+  });
+  b("roleSave", async (t) => {
+    let e = y("#rname").value.trim();
+    if (!e) return y("#rname").focus();
+    F();
+    let a = t.dataset.id;
+    await h.engine.editGroup(se.lid, a ? { editRole: { id: a, n: e, c: jmRoleCor } } : { addRole: { n: e, c: jmRoleCor } }), Be(), _(a ? "Cargo salvo" : "Cargo criado");
+  });
+  b("roleDel", async (t) => {
+    F(), await h.engine.editGroup(se.lid, { removeRole: t.dataset.id }), Be(), _("Cargo apagado");
+  });
+  b("memberRoles", (t) => {
+    let e = h.engine.groups.get(se.lid),
+      a = t.dataset.pk,
+      n = e.meta.roles || [];
+    F(),
+      setTimeout(
+        () =>
+          ee(`<h2 class="sh-title">Cargos de ${M(ne(a))}</h2>${n.length ? `<div class="rolechips">${n.map((s) => `<button class="rchip ${jmRolesOf(e, a).includes(s) ? "on" : ""}" data-act="roleToggle" data-pk="${a}" data-id="${s.id}" style="--rc:${JM_ROLE_CORES[s.c]}"><i></i>${M(s.n)}</button>`).join("")}</div><p class="note">At\xE9 4 cargos por pessoa.</p>` : `<p class="sh-sub">O grupo ainda n\xE3o tem cargos.</p><button class="btn" data-act="roleEdit" data-id="">Criar cargo</button>`}`),
+        200,
+      );
+  });
+  b("roleToggle", async (t) => {
+    let e = h.engine.groups.get(se.lid),
+      a = t.dataset.pk,
+      n = !jmRolesOf(e, a).some((s) => s.id === t.dataset.id);
+    if (n && jmRolesOf(e, a).length >= 4) return _("No m\xE1ximo 4 cargos por pessoa");
+    t.classList.toggle("on", n), await h.engine.editGroup(se.lid, { memberRole: { pk: a, id: t.dataset.id, on: n } }), Be();
+  });
   b("msgTap", (t, e) => {
     (e.target.closest("[data-act]:not(.msg)") &&
       e.target.closest("[data-act]") !== t) ||
@@ -16845,6 +17374,10 @@ zoo`.split(`
   });
   b("cancelReply", () => {
     (C.reply = null), (y("#replyslot", C.el).innerHTML = "");
+  });
+  b("cancelEdit", () => {
+    let t = y("#msgin", C.el);
+    t && ((t.value = ""), vo(t), wo()), jmEditCancel();
   });
   b("copyMsg", async () => {
     let t = C.msgs.find((e) => e.id === C.pop);
@@ -16892,7 +17425,8 @@ zoo`.split(`
   <button class="atile" data-act="cameraPhoto"><span class="ab">${x("camera")}</span>C\xE2mera</button>
   <button class="atile hot" data-act="attachSound"><span class="ab">${x("wave")}</span>Som</button>
   <button class="atile" data-act="attachVoice"><span class="ab">${x("mic")}</span>\xC1udio</button>
-  <button class="atile" data-act="gifSheet"><span class="ab">${x("gif")}</span>GIF</button></div>
+  <button class="atile" data-act="gifSheet"><span class="ab">${x("gif")}</span>GIF</button>
+  <button class="atile" data-act="pollNew"><span class="ab">${x("checks")}</span>Enquete</button></div>
   <p class="note" style="padding:14px 2px 0">Fotos s\xE3o reduzidas e os metadados (como localiza\xE7\xE3o) s\xE3o removidos antes de sair do aparelho.</p>`),
   );
   b("attachVoice", () => {
@@ -17089,6 +17623,8 @@ zoo`.split(`
       e = t.chatFor(C.key);
     e.kind === "dm"
       ? ee(`<div class="mlist">
+      <button class="mitem" data-act="chatSearch">${x("search")}Buscar na conversa</button>
+      <button class="mitem" data-act="pinsOpen">${x("pin")}Mensagens fixadas</button>
       <button class="mitem" data-act="openProfileCur">${x("user")}Ver perfil e c\xF3digo de seguran\xE7a</button>
       <button class="mitem" data-act="ttlSheet">${x("timer")}<span>Mensagens tempor\xE1rias<small>${M(yt(e.ttl))}</small></span></button>
       <button class="mitem" data-act="toggleMute">${x(e.muted ? "bell" : "belloff")}${e.muted ? "Ativar notifica\xE7\xF5es" : "Silenciar"}</button>
@@ -17096,6 +17632,8 @@ zoo`.split(`
       <button class="mitem" data-act="clearChat">${x("trash")}Limpar conversa</button>
       <button class="mitem danger" data-act="blockCur">${x("ban")}Bloquear</button></div>`)
       : ee(`<div class="mlist">
+      <button class="mitem" data-act="chatSearch">${x("search")}Buscar no canal</button>
+      <button class="mitem" data-act="pinsOpen">${x("pin")}Mensagens fixadas</button>
       <button class="mitem" data-act="chatToGroupS">${x("users")}Canais e membros</button>
       <button class="mitem" data-act="toggleMute">${x(e.muted ? "bell" : "belloff")}${e.muted ? "Ativar notifica\xE7\xF5es do canal" : "Silenciar canal"}</button>
       <button class="mitem" data-act="clearChat">${x("trash")}Limpar canal neste aparelho</button></div>`);
@@ -17545,6 +18083,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         <div class="pills">
           <button class="pbt" data-act="groupInvite">${x("userplus", "sm")}Convidar</button>
           <button class="pbt ${t.mute ? "on" : ""}" data-act="groupMute">${x(t.mute ? "belloff" : "bell", "sm")}${t.mute ? "Silenciado" : "Silenciar"}</button>
+          ${s || (t.meta.roles || []).length ? `<button class="pbt" data-act="rolesOpen">${x("sparkle", "sm")}Cargos</button>` : ""}
         </div></div>
       <div class="seg ${se.tab === "membros" ? "m1" : ""}" role="tablist"><i class="ind"></i><button class="${se.tab === "canais" ? "on" : ""}" data-act="gtab" data-t="canais">Canais</button><button class="${se.tab === "membros" ? "on" : ""}" data-act="gtab" data-t="membros">Membros</button></div>
       <div id="gbody">${se.tab === "canais" ? L0(t) : T0(t)}</div><div style="height:28px"></div></div>`;
@@ -17606,8 +18145,12 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     let e = h.engine,
       a = (s) =>
         s === t.meta.owner ? 0 : (t.meta.admins || []).includes(s) ? 1 : 2,
+      jr = (s) => {
+        let o = jmRolesOf(t, s)[0];
+        return o ? (t.meta.roles || []).indexOf(o) : 99;
+      },
       n = [...t.meta.members].sort(
-        (s, o) => a(s) - a(o) || ne(s).localeCompare(ne(o)),
+        (s, o) => a(s) - a(o) || jr(s) - jr(o) || ne(s).localeCompare(ne(o)),
       );
     return (
       `<div class="label">${n.length} ${n.length === 1 ? "membro" : "membros"}</div>` +
@@ -17620,7 +18163,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
                   ? "Admin"
                   : "",
             r = e.contacts.get(s);
-          return `<div class="mrow2" role="button" tabindex="0" data-act="memberMenu" data-pk="${s}" style="cursor:pointer">${pe(s, 44)}<div><div class="nmx"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${M(ne(s))}</span>${o ? `<span class="rolepill">${o}</span>` : ""}</div>
+          let rr = jmRolesOf(t, s);
+          return `<div class="mrow2" role="button" tabindex="0" data-act="memberMenu" data-pk="${s}" style="cursor:pointer">${pe(s, 44)}<div><div class="nmx"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${rr[0] ? `color:${JM_ROLE_CORES[rr[0].c]}` : ""}">${M(ne(s))}</span>${o ? `<span class="rolepill">${o}</span>` : ""}${rr.map((q) => `<span class="rolepill cust" style="--rc:${JM_ROLE_CORES[q.c]}">${M(q.n)}</span>`).join("")}</div>
       <small>${s === e.pk ? "Voc\xEA" : r && r.status === "ok" ? "Nos seus contatos" : "Membro do grupo"}</small></div></div>`;
         })
         .join("") +
@@ -17740,6 +18284,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       o = e.contacts.get(n);
     ee(`<div class="cinfo">${pe(n, 72)}<h3>${M(ne(n))}</h3></div><div class="mlist">
     <button class="mitem" data-act="memberMsg" data-pk="${n}">${x("chat")}${o && o.status === "ok" ? "Mandar mensagem" : "Adicionar e mandar mensagem"}</button>
+    ${cn(a, e.pk) ? `<button class="mitem" data-act="memberRoles" data-pk="${n}">${x("sparkle")}<span>Cargos<small>${M(jmRolesOf(a, n).map((q) => q.n).join(", ") || "Nenhum cargo")}</small></span></button>` : ""}
     ${
       s
         ? `<button class="mitem" data-act="memberAdmin" data-pk="${n}">${x("shield")}${(a.meta.admins || []).includes(n) ? "Remover admin" : "Tornar admin"}</button>
@@ -19288,6 +19833,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ${le({ i: "eyeoff", n: "Bloquear capturas de tela", s: "Esconde o conte\xFAdo nas capturas e na tela de apps recentes", act: "tgl", data: 'data-k="lockScreenshots"', sw: e.lockScreenshots })}
     <div class="label">Mensagens</div>
     ${le({ i: "checks", n: "Confirma\xE7\xE3o de leitura", s: "Se desligar, voc\xEA tamb\xE9m n\xE3o v\xEA quando leram", act: "tgl", data: 'data-k="readReceipts"', sw: e.readReceipts })}
+    ${le({ i: "eye", n: "Mostrar quando estou online", s: "Se desligar, voc\xEA tamb\xE9m n\xE3o v\xEA quem est\xE1 online", act: "tgl", data: 'data-k="presence"', sw: e.presence !== !1 })}
     ${le({ i: "chat", n: "Mostrar quando estou digitando", act: "tgl", data: 'data-k="typing"', sw: e.typing })}
     ${le({ i: "timer", n: "Mensagens tempor\xE1rias para novas conversas", act: "ttlDefault", val: yt(e.ttlDefault) })}
     ${le({ i: "bell", n: "Pr\xE9via nas notifica\xE7\xF5es", act: "notifPreview", val: s })}
@@ -19310,6 +19856,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     let s = y(".sw", t);
     s && s.setAttribute("aria-checked", n),
       e === "lockScreenshots" && X.setSecure(n),
+      e === "presence" && jmPresTick(!0),
       e === "background" && X.setBackground(n && a.settings.notifications),
       e === "notifications" &&
         (n && X.requestNotifications(),
@@ -20293,8 +20840,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     let n = h.engine,
       s = n.settings;
     if (a && h.visible) return;
-    let o = n.chats.get(t);
-    if (!o || o.muted) return;
+    let o = n.chats.get(t),
+      jmMen = !!o && o.kind === "group" && e.kind === "text" && e.from !== n.pk && jmMentionsMe(e.text, o);
+    if (!o || (o.muted && !jmMen)) return;
     let r, i, c;
     if (o.kind === "dm") {
       let d = n.contacts.get(o.pk) || {};
@@ -20304,7 +20852,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         (r = d.status === "request" ? "Novo pedido de mensagem" : i);
     } else {
       let d = n.groups.get(o.lid);
-      if (!d || d.mute) return;
+      if (!d || (d.mute && !jmMen)) return;
       let f = d.meta.channels.find((p) => p.id === o.ch);
       (i = ne(e.from)),
         (r = `${i} \xB7 ${d.meta.name}${f ? " #" + f.name : ""}`),
@@ -20371,6 +20919,12 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         a &&
           a.key === e &&
           (J.popTo("chat"), J.pop(), _("Este canal foi apagado por um admin."));
+      }),
+      t.on("pins", (e) => {
+        C && C.key === e && jmPinBar();
+      }),
+      t.on("presence", (e) => {
+        C && C.chat && C.chat.pk === e && sn();
       }),
       t.on("listening", (e) => {
         C && C.chat && C.chat.pk === e && sn();
@@ -20443,6 +20997,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       X.setBackground(!!(e.settings.notifications && e.settings.background)),
       setInterval(Mi, 1500),
       X.available && (setTimeout(() => X.updateCheck(), 8e3), setInterval(() => X.updateCheck(), 216e5)),
+      setTimeout(() => jmPresTick(!0), 2500),
+      setInterval(() => jmPresTick(), 6e4),
       setInterval(() => Ae(), 6e4),
       Io)
     ) {

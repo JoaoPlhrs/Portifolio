@@ -413,6 +413,14 @@ fn privacy(m: &Main) -> El<'_> {
                 ),
                 ui::setting(Some(Icon::Chat), "Mostrar quando estou digitando", None, Trail::Switch(s.typing, |v| Msg::Toggle(Toggle::Typing, v)), None, false),
                 ui::setting(
+                    Some(Icon::Eye),
+                    "Mostrar quando estou online",
+                    Some("Se desligar, você também não vê quem está online".into()),
+                    Trail::Switch(s.presence, |v| Msg::Toggle(Toggle::Presence, v)),
+                    None,
+                    false,
+                ),
+                ui::setting(
                     Some(Icon::Timer),
                     "Mensagens temporárias para novas conversas",
                     None,

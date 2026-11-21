@@ -161,7 +161,269 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         ),
         Modal::Share { sources } => share(m, sources),
         Modal::Crop(c) => crop(m, c),
+        Modal::Search { all, query } => search(m, all, query),
+        Modal::Pins { list } => pins(m, list),
+        Modal::NewPoll { q, opts, multi } => new_poll(q, opts, *multi),
+        Modal::Voters { id } => voters(m, id),
+        Modal::Roles { lid, form } => roles(m, lid, form.as_ref()),
+        Modal::MemberRoles { lid, pk } => member_roles(m, lid, pk),
     }
+}
+
+pub const SEARCH_ID: &str = "busca-conversa";
+pub const ROLE_NAME_ID: &str = "nome-cargo";
+
+fn sem_acento(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            x => x,
+        })
+        .collect()
+}
+
+fn quem<'a>(m: &Main, msg: &jm_core::engine::Message) -> String {
+    if msg.from_me {
+        "Você".into()
+    } else {
+        m.name_of(&msg.author)
+    }
+}
+
+fn search<'a>(m: &'a Main, all: &'a [jm_core::engine::Message], query: &'a str) -> El<'a> {
+    let q = sem_acento(query.trim());
+    let mut lista = column![].spacing(2);
+    if q.chars().count() < 2 {
+        lista = lista.push(ui::note(format!("{} mensagens de texto neste computador. Digite pelo menos 2 letras.", all.len())));
+    } else {
+        let achadas: Vec<&jm_core::engine::Message> = all
+            .iter()
+            .rev()
+            .filter(|x| match &x.body {
+                jm_core::engine::MessageBody::Text(t) => sem_acento(t).contains(&q),
+                jm_core::engine::MessageBody::Poll { q: p, .. } => sem_acento(p).contains(&q),
+                _ => false,
+            })
+            .take(60)
+            .collect();
+        if achadas.is_empty() {
+            lista = lista.push(ui::note("Nada encontrado."));
+        }
+        for x in achadas {
+            let texto = match &x.body {
+                jm_core::engine::MessageBody::Text(t) => t.clone(),
+                jm_core::engine::MessageBody::Poll { q, .. } => format!("Enquete: {q}"),
+                _ => String::new(),
+            };
+            // Mostra um trecho em volta do que foi achado.
+            let pos = sem_acento(&texto).find(&q).unwrap_or(0);
+            let ini = texto.char_indices().map(|(i, _)| i).filter(|i| *i <= pos).rev().nth(30).unwrap_or(0);
+            let trecho: String = texto[ini..].chars().take(140).collect();
+            lista = lista.push(
+                button(
+                    column![
+                        row![
+                            text(quem(m, x)).size(13).font(SEMI).color(t::FG),
+                            text(format!("{} {}", t::day_label(x.ts), t::hhmm(x.ts))).size(12).color(t::FG_FAINT)
+                        ]
+                        .spacing(8),
+                        text(format!("{}{}", if ini > 0 { "…" } else { "" }, trecho)).size(13.5).color(t::FG_DIM)
+                    ]
+                    .spacing(2),
+                )
+                .padding([8, 10])
+                .width(Length::Fill)
+                .style(t::row_item(false))
+                .on_press(Msg::JumpTo(x.id.clone())),
+            );
+        }
+    }
+    card(
+        520.0,
+        column![
+            head("Buscar na conversa", None),
+            iced::widget::text_input("Digite uma palavra", query).id(SEARCH_ID).on_input(Msg::SearchInput).padding([10, 12]).size(14.5).style(t::input),
+            limited(m, lista.into()),
+        ]
+        .spacing(12)
+        .into(),
+    )
+}
+
+fn pins<'a>(m: &'a Main, list: &'a [jm_core::engine::Message]) -> El<'a> {
+    let pode = m.chat.as_ref().is_some_and(|c| m.can_pin(&c.key));
+    let mut col = column![].spacing(4);
+    if list.is_empty() {
+        col = col.push(ui::note("Nenhuma mensagem fixada. Clique com o botão direito numa mensagem e escolha “Fixar na conversa”."));
+    }
+    for x in list {
+        let mut r = row![button(
+            column![text(quem(m, x)).size(13).font(SEMI).color(t::FG), text(ui::ellipsis(&m.engine.preview(x), 160)).size(13.5).color(t::FG_DIM)].spacing(2)
+        )
+        .padding([8, 10])
+        .width(Length::Fill)
+        .style(t::row_item(false))
+        .on_press(Msg::JumpTo(x.id.clone()))]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        if pode {
+            r = r.push(ui::icon_button_sm(Icon::X, "Desafixar", Some(Msg::PinMsg(x.id.clone(), false))));
+        }
+        col = col.push(r);
+    }
+    card(480.0, column![head("Mensagens fixadas", None), limited(m, col.into())].spacing(12).into())
+}
+
+fn new_poll<'a>(q: &'a str, opts: &'a [String], multi: bool) -> El<'a> {
+    let mut lista = column![].spacing(6);
+    for (i, o) in opts.iter().enumerate() {
+        let mut r = row![iced::widget::text_input(&format!("Opção {}", i + 1), o)
+            .on_input(move |v| Msg::PollOpt(i, v))
+            .padding([10, 12])
+            .size(14.5)
+            .style(t::input)]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        if opts.len() > 2 {
+            r = r.push(ui::icon_button_sm(Icon::X, "Tirar opção", Some(Msg::PollDelOpt(i))));
+        }
+        lista = lista.push(r);
+    }
+    if opts.len() < 10 {
+        lista = lista.push(ui::ghost(Some(Icon::Plus), "Adicionar opção", Some(Msg::PollAddOpt)));
+    }
+    card(
+        460.0,
+        column![
+            head("Nova enquete", None),
+            ui::field("Pergunta", ui::input("Ex.: Que dia fica melhor?", q, Msg::PollQ)),
+            ui::field("Opções", lista),
+            row![text("Permitir mais de uma resposta").size(14).color(t::FG).width(Length::Fill), toggler(multi).on_toggle(Msg::PollMulti).size(20)]
+                .align_y(Alignment::Center),
+            row![ui::fill(), ui::ghost(None, "Cancelar", Some(Msg::Key(Key::Escape))), ui::primary(Some(Icon::Send), "Enviar enquete", Some(Msg::PollSend))].spacing(8),
+        ]
+        .spacing(12)
+        .into(),
+    )
+}
+
+fn voters<'a>(m: &'a Main, id: &'a str) -> El<'a> {
+    let msg = m.chat.as_ref().and_then(|c| c.messages.iter().find(|x| x.id == id).cloned()).or_else(|| m.engine.message(id));
+    let Some(jm_core::engine::Message { body: jm_core::engine::MessageBody::Poll { q, o, votes, .. }, .. }) = msg else {
+        return card(400.0, column![head("Votos", None), ui::note("Enquete indisponível.")].spacing(12).into());
+    };
+    let me = m.me_pk();
+    let mut col = column![].spacing(6);
+    for (i, opcao) in o.iter().enumerate() {
+        let quem: Vec<&String> = votes.iter().filter(|(_, v)| v.contains(&(i as u8))).map(|(pk, _)| pk).collect();
+        col = col.push(text(format!("{opcao} · {}", quem.len())).size(13).font(BOLD).color(t::FG_DIM));
+        if quem.is_empty() {
+            col = col.push(text("Ninguém ainda").size(13).color(t::FG_FAINT));
+        }
+        for pk in quem {
+            let nome = if *pk == me { "Você".to_string() } else { m.name_of(pk) };
+            col = col.push(row![ui::avatar(&nome, m.tone_of(pk), m.pic_of(pk), 24.0), text(nome).size(14).color(t::FG)].spacing(8).align_y(Alignment::Center));
+        }
+        col = col.push(ui::vspace(6.0));
+    }
+    card(420.0, column![head(&q, None), limited(m, col.into())].spacing(12).into())
+}
+
+fn cor_cargo(c: u8) -> Color {
+    let (r, g, b) = jm_core::groups::ROLE_CORES[(c % 8) as usize];
+    Color::from_rgb8(r, g, b)
+}
+
+fn roles<'a>(m: &'a Main, lid: &'a str, form: Option<&'a RoleForm>) -> El<'a> {
+    let Some(g) = m.group(lid) else { return Space::new().into() };
+    let admin = g.meta.is_admin(&m.me_pk());
+    if let Some(f) = form {
+        let mut cores = row![].spacing(8);
+        for c in 0..8u8 {
+            let sel = f.c == c;
+            cores = cores.push(
+                button(Space::new().width(26).height(26))
+                    .padding(0)
+                    .style(move |_, _| iced::widget::button::Style {
+                        background: Some(iced::Background::Color(cor_cargo(c))),
+                        border: iced::Border { color: if sel { t::FG } else { Color::TRANSPARENT }, width: 3.0, radius: 999.0.into() },
+                        ..Default::default()
+                    })
+                    .on_press(Msg::RoleColor(c)),
+            );
+        }
+        let mut botoes = row![].spacing(8);
+        if let Some(id) = &f.id {
+            botoes = botoes.push(ui::danger_text(Some(Icon::Trash), "Apagar cargo", Some(Msg::RoleDelete(id.clone()))));
+        }
+        botoes = botoes.push(ui::fill()).push(ui::ghost(None, "Voltar", Some(Msg::OpenRoles(lid.to_string())))).push(ui::primary(Some(Icon::Check), "Salvar", Some(Msg::RoleSave)));
+        return card(
+            420.0,
+            column![
+                head(if f.id.is_some() { "Editar cargo" } else { "Novo cargo" }, None),
+                ui::field("Nome", ui::input("Ex.: Moderador", &f.name, Msg::RoleName).id(ROLE_NAME_ID).on_submit(Msg::RoleSave)),
+                ui::field("Cor", cores),
+                botoes,
+            ]
+            .spacing(14)
+            .into(),
+        );
+    }
+    let mut col = column![].spacing(2);
+    if g.meta.roles.is_empty() {
+        col = col.push(ui::note("Nenhum cargo ainda."));
+    }
+    for r in &g.meta.roles {
+        let n = g.meta.mroles.values().filter(|v| v.contains(&r.id)).count();
+        let linha = row![
+            container(Space::new()).width(14).height(14).style(t::rounded(cor_cargo(r.c), 7.0)),
+            text(r.n.clone()).size(14.5).font(SEMI).color(cor_cargo(r.c)).width(Length::Fill),
+            text(format!("{n} {}", if n == 1 { "pessoa" } else { "pessoas" })).size(12.5).color(t::FG_DIM)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let b = button(linha).padding([9, 10]).width(Length::Fill).style(t::row_item(false));
+        col = col.push(if admin { b.on_press(Msg::RoleForm(Some(r.id.clone()))) } else { b });
+    }
+    let mut corpo = column![
+        head("Cargos", Some(if admin { "Cargos dão nome e cor às pessoas do grupo. Para dar um cargo, clique com o botão direito na pessoa." } else { "Só admins criam e dão cargos." })),
+        limited(m, col.into())
+    ]
+    .spacing(12);
+    if admin && g.meta.roles.len() < jm_core::groups::MAX_ROLES {
+        corpo = corpo.push(row![ui::fill(), ui::primary(Some(Icon::Plus), "Novo cargo", Some(Msg::RoleForm(None)))]);
+    }
+    card(440.0, corpo.into())
+}
+
+fn member_roles<'a>(m: &'a Main, lid: &'a str, pk: &'a str) -> El<'a> {
+    let Some(g) = m.group(lid) else { return Space::new().into() };
+    let tem: Vec<String> = g.meta.mroles.get(pk).cloned().unwrap_or_default();
+    let mut col = column![].spacing(4);
+    if g.meta.roles.is_empty() {
+        col = col.push(ui::note("O grupo ainda não tem cargos."));
+        col = col.push(row![ui::fill(), ui::primary(Some(Icon::Plus), "Criar cargo", Some(Msg::OpenRoles(lid.to_string())))]);
+    }
+    for r in &g.meta.roles {
+        let on = tem.contains(&r.id);
+        col = col.push(
+            row![
+                container(Space::new()).width(12).height(12).style(t::rounded(cor_cargo(r.c), 6.0)),
+                text(r.n.clone()).size(14.5).color(t::FG).width(Length::Fill),
+                toggler(on).on_toggle(move |v| Msg::RoleToggle(lid.to_string(), pk.to_string(), r.id.clone(), v)).size(20)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .padding([6, 4]),
+        );
+    }
+    card(400.0, column![head(&format!("Cargos de {}", m.name_of(pk)), Some("Até 4 cargos por pessoa.")), limited(m, col.into())].spacing(12).into())
 }
 
 fn tile_button<'a>(i: Icon, label: &str, msg: Msg) -> El<'a> {

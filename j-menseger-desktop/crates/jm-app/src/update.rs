@@ -1269,6 +1269,254 @@ impl Main {
                 let e = self.eng();
                 done(async move { e.edit_group(&lid, &[GroupPatch::MoveChannel { id, dir }]).await.map_err(s) })
             }
+            Msg::EditStart(id) => {
+                self.close_overlays();
+                self.modal = None;
+                let Some(c) = self.chat.as_mut() else { return Task::none() };
+                let Some(MessageBody::Text(t)) = c.messages.iter().find(|m| m.id == id && m.from_me).map(|m| m.body.clone()) else {
+                    return Task::none();
+                };
+                c.reply = None;
+                c.edit = Some(id);
+                c.editor = text_editor::Content::with_text(&t);
+                c.editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                iced::widget::operation::focus(EDITOR_ID)
+            }
+            Msg::EditCancel => {
+                if let Some(c) = self.chat.as_mut() {
+                    if c.edit.take().is_some() {
+                        c.editor = text_editor::Content::new();
+                    }
+                }
+                Task::none()
+            }
+            Msg::PinMsg(id, on) => {
+                self.close_overlays();
+                if matches!(self.modal, Some(Modal::Pins { .. })) {
+                    self.modal = None;
+                }
+                let Some(key) = self.chat.as_ref().map(|c| c.key.clone()) else { return Task::none() };
+                let e = self.eng();
+                toast_done(async move {
+                    e.pin_message(&key, &id, on).await.map(|_| if on { "Mensagem fixada".to_string() } else { "Mensagem desafixada".to_string() }).map_err(s)
+                })
+            }
+            Msg::OpenPins => {
+                self.close_overlays();
+                let Some(c) = &self.chat else { return Task::none() };
+                let list: Vec<jm_core::engine::Message> = c
+                    .pins
+                    .iter()
+                    .filter_map(|id| self.engine.message(id))
+                    .filter(|m| m.chat == c.key && !matches!(m.body, MessageBody::Deleted))
+                    .collect();
+                Task::done(Msg::PinsLoaded(list))
+            }
+            Msg::PinsLoaded(list) => {
+                self.modal = Some(Modal::Pins { list });
+                Task::none()
+            }
+            Msg::JumpTo(id) => {
+                self.modal = None;
+                self.close_overlays();
+                let Some(c) = &self.chat else { return Task::none() };
+                if c.messages.iter().any(|m| m.id == id) {
+                    self.flash = Some((id.clone(), Instant::now()));
+                    return self.scroll_to_msg(&id);
+                }
+                let e = self.eng();
+                let key = c.key.clone();
+                Task::perform(async move { (key.clone(), e.messages(&key, i64::MAX, 3000).unwrap_or_default()) }, move |(k, msgs)| {
+                    Msg::JumpLoaded(k, id.clone(), msgs)
+                })
+            }
+            Msg::JumpLoaded(key, id, msgs) => {
+                let Some(c) = self.chat.as_mut().filter(|c| c.key == key) else { return Task::none() };
+                if !msgs.iter().any(|m| m.id == id) {
+                    return self.toast_t("Essa mensagem não está mais neste computador");
+                }
+                c.more = msgs.len() >= 3000;
+                c.messages = msgs;
+                self.flash = Some((id.clone(), Instant::now()));
+                self.scroll_to_msg(&id)
+            }
+            Msg::OpenSearch => {
+                self.close_overlays();
+                let Some(c) = &self.chat else { return Task::none() };
+                let e = self.eng();
+                let key = c.key.clone();
+                Task::perform(async move { e.messages(&key, i64::MAX, 5000).unwrap_or_default() }, Msg::SearchLoaded)
+            }
+            Msg::SearchLoaded(all) => {
+                let all = all.into_iter().filter(|m| matches!(m.body, MessageBody::Text(_) | MessageBody::Poll { .. })).collect();
+                self.modal = Some(Modal::Search { all, query: String::new() });
+                iced::widget::operation::focus(crate::v_modal::SEARCH_ID)
+            }
+            Msg::SearchInput(v) => {
+                if let Some(Modal::Search { query, .. }) = &mut self.modal {
+                    *query = v.chars().take(80).collect();
+                }
+                Task::none()
+            }
+            Msg::OpenPoll => {
+                self.close_overlays();
+                self.modal = Some(Modal::NewPoll { q: String::new(), opts: vec![String::new(), String::new()], multi: false });
+                Task::none()
+            }
+            Msg::PollQ(v) => {
+                if let Some(Modal::NewPoll { q, .. }) = &mut self.modal {
+                    *q = v.chars().take(200).collect();
+                }
+                Task::none()
+            }
+            Msg::PollOpt(i, v) => {
+                if let Some(Modal::NewPoll { opts, .. }) = &mut self.modal {
+                    if let Some(o) = opts.get_mut(i) {
+                        *o = v.chars().take(80).collect();
+                    }
+                }
+                Task::none()
+            }
+            Msg::PollAddOpt => {
+                if let Some(Modal::NewPoll { opts, .. }) = &mut self.modal {
+                    if opts.len() < 10 {
+                        opts.push(String::new());
+                    }
+                }
+                Task::none()
+            }
+            Msg::PollDelOpt(i) => {
+                if let Some(Modal::NewPoll { opts, .. }) = &mut self.modal {
+                    if opts.len() > 2 && i < opts.len() {
+                        opts.remove(i);
+                    }
+                }
+                Task::none()
+            }
+            Msg::PollMulti(on) => {
+                if let Some(Modal::NewPoll { multi, .. }) = &mut self.modal {
+                    *multi = on;
+                }
+                Task::none()
+            }
+            Msg::PollSend => {
+                let Some(Modal::NewPoll { q, opts, multi }) = &self.modal else { return Task::none() };
+                let opcoes: Vec<String> = opts.iter().map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect();
+                if q.trim().is_empty() || opcoes.len() < 2 {
+                    return self.toast_t("Escreva a pergunta e pelo menos duas opções.");
+                }
+                let (q, multi) = (q.trim().to_string(), *multi);
+                self.modal = None;
+                let Some(key) = self.chat.as_ref().map(|c| c.key.clone()) else { return Task::none() };
+                let e = self.eng();
+                Task::batch([done(async move { e.send_poll(&key, &q, &opcoes, multi).await.map(|_| ()).map_err(s) }), to_bottom()])
+            }
+            Msg::Vote(id, i) => {
+                let Some(c) = &self.chat else { return Task::none() };
+                let Some(MessageBody::Poll { multi, votes, .. }) = c.messages.iter().find(|m| m.id == id).map(|m| &m.body) else {
+                    return Task::none();
+                };
+                let atual = votes.get(&self.me_pk()).cloned().unwrap_or_default();
+                let novo: Vec<u8> = if *multi {
+                    if atual.contains(&i) {
+                        atual.into_iter().filter(|x| *x != i).collect()
+                    } else {
+                        let mut v = atual;
+                        v.push(i);
+                        v.sort();
+                        v
+                    }
+                } else if atual.contains(&i) {
+                    Vec::new()
+                } else {
+                    vec![i]
+                };
+                let key = c.key.clone();
+                let e = self.eng();
+                done(async move { e.vote(&key, &id, &novo).await.map_err(s) })
+            }
+            Msg::OpenVoters(id) => {
+                self.close_overlays();
+                self.modal = Some(Modal::Voters { id });
+                Task::none()
+            }
+            Msg::OpenRoles(lid) => {
+                self.close_overlays();
+                self.modal = Some(Modal::Roles { lid, form: None });
+                Task::none()
+            }
+            Msg::RoleForm(id) => {
+                if let Some(Modal::Roles { lid, form }) = &mut self.modal {
+                    let g = self.engine.group(lid);
+                    let r = id.as_ref().and_then(|id| g.as_ref().and_then(|g| g.meta.roles.iter().find(|r| &r.id == id).cloned()));
+                    let n = g.map(|g| g.meta.roles.len()).unwrap_or(0);
+                    *form = Some(match r {
+                        Some(r) => RoleForm { id: Some(r.id), name: r.n, c: r.c },
+                        None => RoleForm { id: None, name: String::new(), c: (n % 8) as u8 },
+                    });
+                    if id.is_none() && n >= jm_core::groups::MAX_ROLES {
+                        *form = None;
+                        return self.toast_t("No máximo 12 cargos por grupo");
+                    }
+                }
+                iced::widget::operation::focus(crate::v_modal::ROLE_NAME_ID)
+            }
+            Msg::RoleName(v) => {
+                if let Some(Modal::Roles { form: Some(f), .. }) = &mut self.modal {
+                    f.name = v.chars().take(24).collect();
+                }
+                Task::none()
+            }
+            Msg::RoleColor(c) => {
+                if let Some(Modal::Roles { form: Some(f), .. }) = &mut self.modal {
+                    f.c = c % 8;
+                }
+                Task::none()
+            }
+            Msg::RoleSave => {
+                let Some(Modal::Roles { lid, form }) = &mut self.modal else { return Task::none() };
+                let Some(f) = form.take() else { return Task::none() };
+                if f.name.trim().is_empty() {
+                    *form = Some(f);
+                    return Task::none();
+                }
+                let lid = lid.clone();
+                let patch = match f.id {
+                    Some(id) => GroupPatch::EditRole { id, n: Some(f.name.trim().into()), c: Some(f.c) },
+                    None => GroupPatch::AddRole { n: f.name.trim().into(), c: f.c },
+                };
+                let e = self.eng();
+                done(async move { e.edit_group(&lid, &[patch]).await.map_err(s) })
+            }
+            Msg::RoleDelete(id) => {
+                let Some(Modal::Roles { lid, form }) = &mut self.modal else { return Task::none() };
+                *form = None;
+                let lid = lid.clone();
+                let e = self.eng();
+                toast_done(async move { e.edit_group(&lid, &[GroupPatch::RemoveRole(id)]).await.map(|_| "Cargo apagado".to_string()).map_err(s) })
+            }
+            Msg::OpenMemberRoles(lid, pk) => {
+                self.close_overlays();
+                self.modal = Some(Modal::MemberRoles { lid, pk });
+                Task::none()
+            }
+            Msg::RoleToggle(lid, pk, id, on) => {
+                if on && self.group(&lid).is_some_and(|g| g.meta.roles_of(&pk).len() >= jm_core::groups::MAX_ROLES_POR_MEMBRO) {
+                    return self.toast_t("No máximo 4 cargos por pessoa");
+                }
+                let e = self.eng();
+                done(async move { e.edit_group(&lid, &[GroupPatch::MemberRole { pk, id, on }]).await.map_err(s) })
+            }
+            Msg::MentionPick(nome) => {
+                let Some(c) = self.chat.as_mut() else { return Task::none() };
+                let t = c.editor.text();
+                let t = t.trim_end_matches('\n');
+                let Some(i) = t.rfind('@') else { return Task::none() };
+                let novo = format!("{}@{} ", &t[..i], nome);
+                c.editor = text_editor::Content::with_text(&novo);
+                c.editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                iced::widget::operation::focus(EDITOR_ID)
+            }
             Msg::MemberMenu(lid, pk) => open_menu(CtxKind::Member(lid, pk)),
             Msg::SetAdmin(lid, pk, on) => {
                 self.menu = None;
@@ -2223,6 +2471,8 @@ impl Main {
             editor: text_editor::Content::with_text(rascunho.trim_end_matches('\n')),
             reply: None,
             progress: HashMap::new(),
+            edit: None,
+            pins: self.engine.pins(&key),
         });
         let e = self.eng();
         let k = key.clone();
@@ -2246,6 +2496,14 @@ impl Main {
         let Some(c) = self.chat.as_mut() else { return Task::none() };
         let texto = c.editor.text();
         let texto = texto.trim().to_string();
+        if let Some(id) = c.edit.take() {
+            c.editor = text_editor::Content::new();
+            if texto.is_empty() {
+                return Task::none();
+            }
+            let key = c.key.clone();
+            return done(async move { e.edit_message(&key, &id, &texto).await.map_err(s) });
+        }
         if texto.is_empty() {
             return Task::none();
         }
@@ -2284,6 +2542,9 @@ impl Main {
         if k == Key::Escape {
             if self.call_full && self.menu.is_none() && self.popup.is_none() && self.modal.is_none() {
                 return Task::done(Msg::CallFull(false));
+            }
+            if self.menu.is_none() && self.popup.is_none() && self.modal.is_none() && self.chat.as_ref().is_some_and(|c| c.edit.is_some()) {
+                return Task::done(Msg::EditCancel);
             }
             if self.menu.is_some() || self.popup.is_some() {
                 self.close_overlays();
@@ -2474,6 +2735,7 @@ impl Main {
                 Toggle::Notifications => s.notifications = on,
                 Toggle::Sounds => s.sounds = on,
                 Toggle::LockScreenshots => s.lock_screenshots = on,
+                Toggle::Presence => s.presence = on,
                 Toggle::ForceRelay => s.force_relay = on,
             })
             .await
@@ -2693,6 +2955,13 @@ impl Main {
                 })),
             ));
         }
+        let ausente = !self.focused || self.lock.is_some();
+        if self.pres_sent.is_none_or(|(a, t)| a != ausente || t.elapsed() >= Duration::from_secs(60)) {
+            let forca = self.pres_sent.is_none_or(|(a, _)| a != ausente);
+            self.pres_sent = Some((ausente, Instant::now()));
+            let e = self.eng();
+            tarefas.push(Task::perform(async move { e.set_presence(ausente, forca).await }, |_| Msg::Noop));
+        }
         let vendo_perfil = self.section == Section::Settings && self.page == SettingsPage::Profile;
         if (self.listen_share || vendo_perfil) && !self.np_polling && self.np_at.elapsed() >= Duration::from_secs(5) {
             self.np_polling = true;
@@ -2724,6 +2993,13 @@ impl Main {
 
     fn on_engine(&mut self, ev: EngineEvent) -> Task<Msg> {
         match ev {
+            EngineEvent::Pins { chat } => {
+                if let Some(c) = self.chat.as_mut().filter(|c| c.key == chat) {
+                    c.pins = self.engine.pins(&chat);
+                }
+                Task::none()
+            }
+            EngineEvent::Presence { .. } => Task::none(),
             EngineEvent::Message { chat, message } => {
                 if let Some(c) = self.chat.as_mut().filter(|c| c.key == chat) {
                     if !c.messages.iter().any(|x| x.id == message.id) {
@@ -2848,12 +3124,13 @@ impl Main {
 
     /// Mensagem de outra pessoa: som, toque do soundboard e notificação.
     fn on_incoming(&mut self, chat: &str, m: &jm_core::engine::Message, visible: bool) {
-        let silenciada = self.summary(chat).is_some_and(|c| c.muted)
+        let mencao = matches!(&m.body, MessageBody::Text(t) if self.mentions_me(chat, t));
+        let silenciada = !mencao && self.summary(chat).is_some_and(|c| c.muted)
             || chat
                 .strip_prefix("g:")
                 .and_then(|r| r.split(':').next())
                 .and_then(|lid| self.group(lid))
-                .is_some_and(|g| g.muted);
+                .is_some_and(|g| g.muted && !mencao);
         // Som do soundboard chegando na conversa aberta: toca na hora, como no celular.
         if visible {
             match &m.body {
@@ -2907,6 +3184,23 @@ pub const PADRAO: &str = "Padrão do sistema";
 
 /// Leva a lista de mensagens para a mais nova. A lista é ancorada embaixo,
 /// então o deslocamento conta a partir do fim: zero é a última mensagem.
+impl Main {
+    fn toast_t(&mut self, s: &str) -> Task<Msg> {
+        self.toast(s);
+        Task::none()
+    }
+
+    /// Rola a lista até perto da mensagem (a altura de cada uma varia, então
+    /// é uma estimativa pela posição; o destaque mostra qual é).
+    fn scroll_to_msg(&self, id: &str) -> Task<Msg> {
+        let Some(c) = &self.chat else { return Task::none() };
+        let Some(i) = c.messages.iter().position(|m| m.id == id) else { return Task::none() };
+        let n = c.messages.len().max(2) - 1;
+        let y = 1.0 - (i as f32 / n as f32);
+        iced::widget::operation::snap_to(MESSAGES_ID, iced::widget::operation::RelativeOffset { x: 0.0, y: y.clamp(0.0, 1.0) })
+    }
+}
+
 fn to_bottom() -> Task<Msg> {
     iced::widget::operation::snap_to(MESSAGES_ID, iced::widget::operation::RelativeOffset::START)
 }

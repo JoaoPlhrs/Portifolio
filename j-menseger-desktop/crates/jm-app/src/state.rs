@@ -137,6 +137,7 @@ pub enum Toggle {
     Sounds,
     LockScreenshots,
     ForceRelay,
+    Presence,
 }
 
 /// Escolhas de uma lista (como o `choose` do celular).
@@ -405,6 +406,12 @@ pub enum Modal {
     EditSound { id: String, name: String, emoji: String },
     Share { sources: Vec<Source> },
     Crop(CropState),
+    Search { all: Vec<CoreMessage>, query: String },
+    Pins { list: Vec<CoreMessage> },
+    NewPoll { q: String, opts: Vec<String>, multi: bool },
+    Voters { id: String },
+    Roles { lid: String, form: Option<RoleForm> },
+    MemberRoles { lid: String, pk: String },
 }
 
 /// Menu de contexto (botão direito), na posição do ponteiro.
@@ -430,6 +437,18 @@ pub struct OpenChat {
     pub editor: text_editor::Content,
     pub reply: Option<String>,
     pub progress: HashMap<String, (u32, u32)>,
+    /// Mensagem sendo editada (o texto dela vai para o campo).
+    pub edit: Option<String>,
+    /// Mensagens fixadas (a mais recente primeiro).
+    pub pins: Vec<String>,
+}
+
+/// Formulário de cargo (novo quando `id` é `None`).
+#[derive(Debug, Clone, Default)]
+pub struct RoleForm {
+    pub id: Option<String>,
+    pub name: String,
+    pub c: u8,
 }
 
 pub const PAGE: usize = 60;
@@ -508,6 +527,10 @@ pub struct Main {
     pub update_prog: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     pub update_msg: Option<String>,
     pub update_at: Instant,
+    /// Último aviso de online/ausente (ausente?, quando).
+    pub pres_sent: Option<(bool, Instant)>,
+    /// Mensagem destacada depois de pular até ela.
+    pub flash: Option<(String, Instant)>,
     pub share_quality: Quality,
 
     pub modal: Option<Modal>,
@@ -621,6 +644,8 @@ impl Main {
             update_prog: None,
             update_msg: None,
             update_at: Instant::now() - Duration::from_secs(6 * 3600 - 8),
+            pres_sent: None,
+            flash: None,
             share_quality: Quality::P1080,
             modal: None,
             popup: None,
@@ -949,6 +974,26 @@ impl Main {
 
     pub fn open_relays(&self) -> usize {
         self.relays.iter().filter(|r| r.connected).count()
+    }
+
+    /// O texto menciona a pessoa (`@nome` ou `@todos`) num grupo?
+    pub fn mentions_me(&self, chat: &str, texto: &str) -> bool {
+        let Some(lid) = chat.strip_prefix("g:").and_then(|r| r.split(':').next()) else { return false };
+        let t = texto.to_lowercase();
+        if t.contains("@todos") || t.contains("@everyone") {
+            return true;
+        }
+        self.my_names(lid).iter().any(|n| t.contains(&format!("@{n}")))
+    }
+
+    /// Nomes pelos quais a pessoa pode ser mencionada num grupo (minúsculos).
+    pub fn my_names(&self, lid: &str) -> Vec<String> {
+        let me = self.me_pk();
+        let mut v = vec![self.me.name.clone()];
+        if let Some(n) = self.group(lid).and_then(|g| g.meta.names.get(&me).cloned()) {
+            v.push(n);
+        }
+        v.into_iter().map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty()).collect()
     }
 
     pub fn toast(&mut self, s: impl Into<String>) {

@@ -232,6 +232,44 @@ pub enum AppMessage {
     /// Sinalização de chamada. Efêmera, menos `missed`, que fica no histórico.
     #[serde(rename = "call")]
     Call(CallSignal),
+    /// Texto novo de uma mensagem (só quem escreveu pode editar).
+    #[serde(rename = "edit")]
+    Edit { id: String, x: String },
+    /// Fixa (`on` = 1) ou desafixa uma mensagem na conversa.
+    #[serde(rename = "pin")]
+    Pin {
+        id: String,
+        #[serde(default, deserialize_with = "num_ou_bool")]
+        on: u8,
+    },
+    /// Enquete: pergunta, opções e se aceita várias respostas (`m` = 1).
+    #[serde(rename = "poll")]
+    Poll {
+        q: String,
+        o: Vec<String>,
+        #[serde(default, deserialize_with = "num_ou_bool")]
+        m: u8,
+    },
+    /// Voto numa enquete (lista vazia tira o voto).
+    #[serde(rename = "vote")]
+    Vote {
+        id: String,
+        #[serde(default)]
+        v: Vec<i64>,
+    },
+    /// Online (`on`), ausente (`away`) ou escondido (`off`). Sempre efêmero.
+    #[serde(rename = "pres")]
+    Presence { s: String },
+}
+
+/// Aceita `1`/`0` e também `true`/`false` (o JavaScript manda os dois).
+fn num_ou_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Bool(b) => b as u8,
+        serde_json::Value::Number(n) => (n.as_i64().unwrap_or(0) != 0) as u8,
+        _ => 0,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,7 +414,7 @@ impl AppMessage {
     /// Se esta mensagem deve ir em envelope efêmero (não guardada pelo servidor).
     pub fn is_ephemeral(&self) -> bool {
         match self {
-            AppMessage::Typing | AppMessage::Room { .. } | AppMessage::Listening(_) => true,
+            AppMessage::Typing | AppMessage::Room { .. } | AppMessage::Listening(_) | AppMessage::Presence { .. } => true,
             AppMessage::Call(c) => c.a != CallAction::Missed,
             _ => false,
         }
@@ -386,6 +424,22 @@ impl AppMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editar_fixar_enquete_e_online_como_o_celular_manda() {
+        // O celular manda `on` como número e às vezes como booleano.
+        assert_eq!(AppMessage::parse(r#"{"t":"pin","id":"a","on":1}"#), Some(AppMessage::Pin { id: "a".into(), on: 1 }));
+        assert_eq!(AppMessage::parse(r#"{"t":"pin","id":"a","on":false}"#), Some(AppMessage::Pin { id: "a".into(), on: 0 }));
+        assert_eq!(
+            AppMessage::parse(r#"{"t":"poll","q":"Dia?","o":["Sáb","Dom"],"m":1}"#),
+            Some(AppMessage::Poll { q: "Dia?".into(), o: vec!["Sáb".into(), "Dom".into()], m: 1 })
+        );
+        assert_eq!(AppMessage::parse(r#"{"t":"vote","id":"x","v":[1]}"#), Some(AppMessage::Vote { id: "x".into(), v: vec![1] }));
+        assert_eq!(AppMessage::parse(r#"{"t":"edit","id":"x","x":"novo"}"#), Some(AppMessage::Edit { id: "x".into(), x: "novo".into() }));
+        let p = AppMessage::Presence { s: "away".into() };
+        assert!(p.is_ephemeral());
+        assert_eq!(p.to_json(), r#"{"t":"pres","s":"away"}"#);
+    }
 
     #[test]
     fn ouvindo_agora_limpa_e_monta_o_link() {

@@ -166,6 +166,8 @@ pub struct Message {
     pub reacts: BTreeMap<String, String>,
     /// Quando some (mensagem temporária), em milissegundos.
     pub exp: Option<i64>,
+    /// Quando foi editada pela última vez (ms), se foi.
+    pub edited: Option<i64>,
 }
 
 /// Dados de um convite, guardados na própria mensagem até a pessoa aceitar.
@@ -195,6 +197,9 @@ pub enum MessageBody {
     Media(MediaInfo),
     /// Convite para um grupo, com botão de entrar.
     Invite { lid: String, name: String, joined: bool, data: Option<Box<InviteData>> },
+    /// Enquete: pergunta, opções, se aceita várias respostas e os votos
+    /// (`{chave pública: [opções]}`).
+    Poll { q: String, o: Vec<String>, multi: bool, votes: BTreeMap<String, Vec<u8>> },
     Deleted,
 }
 
@@ -206,6 +211,7 @@ impl MessageBody {
             MessageBody::Sound { .. } => "sound",
             MessageBody::Media(_) => "media",
             MessageBody::Invite { .. } => "invite",
+            MessageBody::Poll { .. } => "poll",
             MessageBody::Deleted => "deleted",
         }
     }
@@ -221,6 +227,9 @@ impl MessageBody {
             MessageBody::Media(m) => serde_json::to_string(m).unwrap_or_default(),
             MessageBody::Invite { lid, name, joined, data } => {
                 serde_json::json!({ "lid": lid, "text": name, "joined": joined, "inv": data }).to_string()
+            }
+            MessageBody::Poll { q, o, multi, votes } => {
+                serde_json::json!({ "q": q, "o": o, "m": *multi as u8, "votes": votes }).to_string()
             }
             MessageBody::Deleted => "{}".into(),
         }
@@ -249,6 +258,12 @@ impl MessageBody {
                 name: text,
                 joined: v["joined"].as_bool().unwrap_or(false),
                 data: serde_json::from_value::<InviteData>(v["inv"].clone()).ok().map(Box::new),
+            },
+            "poll" => MessageBody::Poll {
+                q: v["q"].as_str().unwrap_or_default().to_string(),
+                o: serde_json::from_value(v["o"].clone()).unwrap_or_default(),
+                multi: v["m"].as_i64().unwrap_or(0) != 0,
+                votes: serde_json::from_value(v["votes"].clone()).unwrap_or_default(),
             },
             _ => MessageBody::Deleted,
         }
@@ -299,6 +314,10 @@ pub enum EngineEvent {
     ProfileChanged,
     /// Mudou o que um contato está ouvindo.
     Listening { pk: String },
+    /// Um contato ficou online, ausente ou sumiu.
+    Presence { pk: String },
+    /// Mudaram as mensagens fixadas de uma conversa.
+    Pins { chat: String },
     /// Os ajustes mudaram.
     SettingsChanged,
 }
@@ -361,6 +380,9 @@ pub struct Settings {
     /// Esconder o conteúdo da janela em capturas de tela (Windows).
     #[serde(default)]
     pub lock_screenshots: bool,
+    /// Mostrar aos contatos quando estou online (e ver o deles).
+    #[serde(default = "sim")]
+    pub presence: bool,
 }
 
 fn sim() -> bool {
@@ -381,6 +403,7 @@ impl Default for Settings {
             notifications: true,
             sounds: true,
             lock_screenshots: false,
+            presence: true,
         }
     }
 }
@@ -439,6 +462,10 @@ struct State {
     listening: HashMap<String, (Listening, i64)>,
     /// O que eu estou ouvindo e quando avisei os contatos.
     my_listening: Option<(Listening, i64)>,
+    /// Online/ausente de cada contato e quando avisou.
+    presence: HashMap<String, (String, i64)>,
+    /// O que eu avisei por último e quando.
+    my_presence: Option<(String, i64)>,
 }
 
 /// Uma conversa como fica na tabela `chats`.
@@ -530,6 +557,8 @@ impl Engine {
                 rq_scheduled: false,
                 listening: HashMap::new(),
                 my_listening: None,
+                presence: HashMap::new(),
+                my_presence: None,
             })),
             events: tx,
             started: AtomicBool::new(false),
@@ -884,6 +913,7 @@ impl Engine {
                 self.add_msg(
                     &key,
                     Message {
+                        edited: None,
                         id: rid,
                         chat: key.clone(),
                         author: from.clone(),
@@ -1013,6 +1043,44 @@ impl Engine {
             AppMessage::Delete { ids } => {
                 self.apply_delete(key, &ids.into_iter().take(100).collect::<Vec<_>>(), from)?;
             }
+            AppMessage::Edit { id, x } => self.apply_edit(key, &id, &x, from, ts)?,
+            AppMessage::Pin { id, on } => self.apply_pin(key, &id, on != 0)?,
+            AppMessage::Poll { q, o, m } => {
+                if !mine {
+                    self.ensure_contact(peer, ContactStatus::Request)?;
+                }
+                self.add_poll(key, rid.clone(), from, mine, ts, &q, &o, m != 0, exp_of(r))?;
+            }
+            AppMessage::Vote { id, v } => self.apply_vote(key, &id, &v, from)?,
+            AppMessage::Presence { s } if !mine => {
+                if eph && aceito {
+                    let s = match s.as_str() {
+                        "away" => "away",
+                        "off" => "off",
+                        _ => "on",
+                    };
+                    let responder = {
+                        let mut st = self.state.lock().unwrap();
+                        let novo = st.presence.get(peer).is_none_or(|(_, q)| now_ms() - q > PRESENCE_TTL_MS);
+                        st.presence.insert(peer.to_string(), (s.to_string(), now_ms()));
+                        // Quem acabou de abrir o app não sabe de mim: respondo uma vez.
+                        match st.my_presence.clone() {
+                            Some((meu, _)) if novo && s != "off" && meu != "off" => Some(meu),
+                            _ => None,
+                        }
+                    };
+                    let _ = self.events.send(EngineEvent::Presence { pk: peer.into() });
+                    if let Some(meu) = responder {
+                        let me = Arc::clone(self);
+                        let chat = key.to_string();
+                        tokio::spawn(async move {
+                            let _ = me
+                                .send_app(&chat, &AppMessage::Presence { s: meu }, BuildOpts { ephemeral: true, no_ttl: true, no_self_copy: true, ..Default::default() })
+                                .await;
+                        });
+                    }
+                }
+            }
             AppMessage::Ttl { v } => {
                 let v = (v as i64).clamp(0, 28 * DAY) as u32;
                 {
@@ -1036,6 +1104,7 @@ impl Engine {
                 self.add_msg(
                     key,
                     Message {
+                        edited: None,
                         id: rid,
                         chat: key.into(),
                         author: from.into(),
@@ -1060,6 +1129,7 @@ impl Engine {
                 self.add_msg(
                     key,
                     Message {
+                        edited: None,
                         id: rid,
                         chat: key.into(),
                         author: from.into(),
@@ -1118,6 +1188,7 @@ impl Engine {
                 self.add_msg(
                     &key,
                     Message {
+                        edited: None,
                         id: rid,
                         chat: key.clone(),
                         author: from,
@@ -1278,6 +1349,7 @@ impl Engine {
                     self.add_msg(
                         &key,
                         Message {
+                            edited: None,
                             id: rid.into(),
                             chat: key.clone(),
                             author: from.into(),
@@ -1296,6 +1368,26 @@ impl Engine {
             AppMessage::Delete { ids } => {
                 if let Some(key) = key.filter(|_| !gone) {
                     self.apply_delete(&key, &ids.into_iter().take(100).collect::<Vec<_>>(), from)?;
+                }
+            }
+            AppMessage::Edit { id, x } => {
+                if let Some(key) = key.filter(|_| !gone) {
+                    self.apply_edit(&key, &id, &x, from, ts)?;
+                }
+            }
+            AppMessage::Pin { id, on } => {
+                if let Some(key) = key.filter(|_| !gone && g.meta.is_admin(from)) {
+                    self.apply_pin(&key, &id, on != 0)?;
+                }
+            }
+            AppMessage::Poll { q, o, m } => {
+                if let Some(key) = key.filter(|_| !gone) {
+                    self.add_poll(&key, rid.to_string(), from, mine, ts, &q, &o, m != 0, exp_of(r))?;
+                }
+            }
+            AppMessage::Vote { id, v } => {
+                if let Some(key) = key.filter(|_| !gone) {
+                    self.apply_vote(&key, &id, &v, from)?;
                 }
             }
             AppMessage::Room { ch, a } => {
@@ -1394,6 +1486,7 @@ impl Engine {
             },
             MessageBody::Sound { .. } => "Som do soundboard".into(),
             MessageBody::Invite { name, .. } => format!("Convite para {name}"),
+            MessageBody::Poll { q, .. } => format!("Enquete: {q}"),
             MessageBody::Deleted => "Mensagem apagada".into(),
             MessageBody::System { sys, v, legacy } => {
                 if let Some(t) = legacy {
@@ -1781,6 +1874,7 @@ impl Engine {
         let b = self.build(chat_key, KIND_TEXT, text.clone(), tags, BuildOpts::default())?;
         self.ensure_dm_contact(chat_key).await?;
         let msg = Message {
+            edited: None,
             id: b.id.clone(),
             chat: chat_key.into(),
             author: self.pk_hex(),
@@ -1824,6 +1918,7 @@ impl Engine {
         let b = self.build(chat_key, KIND_APP, AppMessage::Sound { id: id.into() }.to_json(), Vec::new(), BuildOpts::default())?;
         self.ensure_dm_contact(chat_key).await?;
         let msg = Message {
+            edited: None,
             id: b.id.clone(),
             chat: chat_key.into(),
             author: self.pk_hex(),
@@ -1864,6 +1959,226 @@ impl Engine {
         let b = self.build(chat_key, KIND_REACTION, conteudo, tags, BuildOpts { no_ttl: true, ..Default::default() })?;
         self.publish(&b).await;
         Ok(())
+    }
+
+    /* ---------------- editar, fixar, enquetes ---------------- */
+
+    /// Troca o texto de uma mensagem — só se quem pediu for quem escreveu, e
+    /// só texto. Uma edição mais velha que a última aplicada é ignorada.
+    fn apply_edit(&self, key: &str, id: &str, x: &str, from: &str, ts: i64) -> Result<()> {
+        if !is_hex64(id) {
+            return Ok(());
+        }
+        let texto = clamp_keep(x, 6000);
+        if texto.trim().is_empty() {
+            return Ok(());
+        }
+        let eu = self.pk_hex();
+        let msg = {
+            let store = self.store.lock().unwrap();
+            let Some(sm) = store.get_msg(id)? else { return Ok(()) };
+            if sm.chat != key || sm.author != from || sm.kind != "text" {
+                return Ok(());
+            }
+            let mut m = from_stored(sm, &eu);
+            if m.edited.is_some_and(|e| e > ts) {
+                return Ok(());
+            }
+            m.body = MessageBody::Text(texto.clone());
+            m.edited = Some(ts);
+            store.update_msg(&to_stored(&m))?;
+            let mut c = chat_for(&store, key);
+            if c.last_id.as_deref() == Some(id) {
+                c.last_text = texto;
+                save_chat(&store, &c)?;
+            }
+            m
+        };
+        let _ = self.events.send(EngineEvent::MessageChanged { chat: key.into(), message: Box::new(msg) });
+        let _ = self.events.send(EngineEvent::ChatsChanged);
+        Ok(())
+    }
+
+    /// Edita uma mensagem sua de texto, aqui e para todos.
+    pub async fn edit_message(self: &Arc<Self>, chat_key: &str, id: &str, text: &str) -> Result<()> {
+        let text: String = text.trim().chars().take(6000).collect();
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.apply_edit(chat_key, id, &text, &self.pk_hex(), now_ms())?;
+        self.send_app(chat_key, &AppMessage::Edit { id: id.into(), x: text }, BuildOpts { no_ttl: true, ..Default::default() })
+            .await?;
+        Ok(())
+    }
+
+    /// Mensagens fixadas de uma conversa (a mais recente primeiro).
+    pub fn pins(&self, chat_key: &str) -> Vec<String> {
+        self.store.lock().unwrap().get_kv::<Vec<String>>(&format!("pins:{chat_key}")).ok().flatten().unwrap_or_default()
+    }
+
+    fn apply_pin(&self, key: &str, id: &str, on: bool) -> Result<()> {
+        if !is_hex64(id) {
+            return Ok(());
+        }
+        let mut p = self.pins(key);
+        p.retain(|x| x != id);
+        if on {
+            p.insert(0, id.to_string());
+        }
+        p.truncate(50);
+        self.store.lock().unwrap().set_kv(&format!("pins:{key}"), &p)?;
+        let _ = self.events.send(EngineEvent::Pins { chat: key.into() });
+        Ok(())
+    }
+
+    /// Fixa ou desafixa uma mensagem para todos da conversa.
+    pub async fn pin_message(self: &Arc<Self>, chat_key: &str, id: &str, on: bool) -> Result<()> {
+        self.apply_pin(chat_key, id, on)?;
+        self.send_app(chat_key, &AppMessage::Pin { id: id.into(), on: on as u8 }, BuildOpts { no_ttl: true, ..Default::default() })
+            .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_poll(&self, key: &str, id: String, from: &str, mine: bool, ts: i64, q: &str, o: &[String], multi: bool, exp: Option<i64>) -> Result<()> {
+        let q = clamp(q, 200);
+        let o: Vec<String> = o.iter().map(|x| clamp(x, 80)).filter(|x| !x.is_empty()).take(10).collect();
+        if q.is_empty() || o.len() < 2 {
+            return Ok(());
+        }
+        self.add_msg(
+            key,
+            Message {
+                id,
+                chat: key.into(),
+                author: from.into(),
+                from_me: mine,
+                ts,
+                body: MessageBody::Poll { q, o, multi, votes: BTreeMap::new() },
+                status: mine.then_some(Delivery::Sent),
+                reply: None,
+                reacts: BTreeMap::new(),
+                exp,
+                edited: None,
+            },
+            !mine,
+        )?;
+        Ok(())
+    }
+
+    /// Manda uma enquete (2 a 10 opções).
+    pub async fn send_poll(self: &Arc<Self>, chat_key: &str, q: &str, opts: &[String], multi: bool) -> Result<Message> {
+        self.check_group_joined(chat_key)?;
+        let q = clamp(q, 200);
+        let o: Vec<String> = opts.iter().map(|x| clamp(x, 80)).filter(|x| !x.is_empty()).take(10).collect();
+        if q.is_empty() || o.len() < 2 {
+            return Err(erro("Escreva a pergunta e pelo menos duas opções."));
+        }
+        let app = AppMessage::Poll { q: q.clone(), o: o.clone(), m: multi as u8 };
+        let b = self.build(chat_key, KIND_APP, app.to_json(), Vec::new(), BuildOpts::default())?;
+        self.ensure_dm_contact(chat_key).await?;
+        let msg = Message {
+            id: b.id.clone(),
+            chat: chat_key.into(),
+            author: self.pk_hex(),
+            from_me: true,
+            ts: b.created_ms,
+            body: MessageBody::Poll { q, o, multi, votes: BTreeMap::new() },
+            status: None,
+            reply: None,
+            reacts: BTreeMap::new(),
+            exp: None,
+            edited: None,
+        };
+        self.local_send(chat_key, msg, &b).await
+    }
+
+    fn apply_vote(&self, key: &str, id: &str, v: &[i64], from: &str) -> Result<()> {
+        if !is_hex64(id) {
+            return Ok(());
+        }
+        let eu = self.pk_hex();
+        let msg = {
+            let store = self.store.lock().unwrap();
+            let Some(sm) = store.get_msg(id)? else { return Ok(()) };
+            if sm.chat != key || sm.kind != "poll" {
+                return Ok(());
+            }
+            let mut m = from_stored(sm, &eu);
+            let MessageBody::Poll { o, multi, votes, .. } = &mut m.body else { return Ok(()) };
+            let mut escolha: Vec<u8> = Vec::new();
+            for x in v {
+                if *x >= 0 && (*x as usize) < o.len() && !escolha.contains(&(*x as u8)) {
+                    escolha.push(*x as u8);
+                }
+            }
+            if !*multi {
+                escolha.truncate(1);
+            }
+            if escolha.is_empty() {
+                votes.remove(from);
+            } else {
+                votes.insert(from.to_string(), escolha);
+            }
+            store.update_msg(&to_stored(&m))?;
+            m
+        };
+        let _ = self.events.send(EngineEvent::MessageChanged { chat: key.into(), message: Box::new(msg) });
+        Ok(())
+    }
+
+    /// Vota numa enquete (lista vazia tira o voto).
+    pub async fn vote(self: &Arc<Self>, chat_key: &str, id: &str, escolha: &[u8]) -> Result<()> {
+        let v: Vec<i64> = escolha.iter().map(|x| *x as i64).collect();
+        self.apply_vote(chat_key, id, &v, &self.pk_hex())?;
+        self.send_app(chat_key, &AppMessage::Vote { id: id.into(), v }, BuildOpts { no_ttl: true, ..Default::default() }).await?;
+        Ok(())
+    }
+
+    /* ---------------- online / ausente ---------------- */
+
+    /// `Some("on")`, `Some("away")` ou `None` (sumiu, escondeu, ou eu escondi o meu).
+    pub fn presence_of(&self, pk: &str) -> Option<&'static str> {
+        if !self.settings().presence {
+            return None;
+        }
+        let st = self.state.lock().unwrap();
+        let (s, quando) = st.presence.get(pk)?;
+        if now_ms() - quando > PRESENCE_TTL_MS {
+            return None;
+        }
+        match s.as_str() {
+            "on" => Some("on"),
+            "away" => Some("away"),
+            _ => None,
+        }
+    }
+
+    /// Conta aos contatos aceitos se estou online ou ausente. Pode chamar
+    /// sempre: só manda quando muda ou a cada [`PRESENCE_HEARTBEAT_MS`].
+    pub async fn set_presence(self: &Arc<Self>, away: bool, force: bool) {
+        let s = if !self.settings().presence { "off" } else if away { "away" } else { "on" };
+        let agora = now_ms();
+        {
+            let mut st = self.state.lock().unwrap();
+            if let Some((antes, quando)) = &st.my_presence {
+                if !force && antes == s && agora - quando < PRESENCE_HEARTBEAT_MS {
+                    return;
+                }
+                if !force && antes == "off" && s == "off" {
+                    return;
+                }
+            } else if s == "off" && !force {
+                return;
+            }
+            st.my_presence = Some((s.to_string(), agora));
+        }
+        let contatos: Vec<String> = self.contacts().into_iter().filter(|c| c.status == ContactStatus::Ok).map(|c| c.pk).collect();
+        let app = AppMessage::Presence { s: s.into() };
+        for pk in contatos {
+            let chat = ChatKey::Direct { peer: pk }.as_string();
+            let _ = self.send_app(&chat, &app, BuildOpts { ephemeral: true, no_ttl: true, no_self_copy: true, ..Default::default() }).await;
+        }
     }
 
     /// Apaga para todos (só as suas mensagens).
@@ -2240,6 +2555,7 @@ impl Engine {
             err: false,
         };
         let msg = Message {
+            edited: None,
             id: b.id.clone(),
             chat: chat_key.into(),
             author: self.pk_hex(),
@@ -2295,6 +2611,7 @@ impl Engine {
         let added = self.add_msg(
             key,
             Message {
+                edited: None,
                 id: rid,
                 chat: key.into(),
                 author: from.into(),
@@ -2849,6 +3166,7 @@ impl Engine {
             pic_v: g.pic_v,
         };
         let msg = Message {
+            edited: None,
             id: b.id.clone(),
             chat: chat.clone(),
             author: self.pk_hex(),
@@ -3454,6 +3772,7 @@ impl Engine {
 
 fn sys_msg(id: &str, chat: &str, who: &str, from_me: bool, ts: i64, sys: &str, v: i64) -> Message {
     Message {
+        edited: None,
         id: id.into(),
         chat: chat.into(),
         author: who.into(),
@@ -3511,7 +3830,10 @@ fn to_stored(m: &Message) -> StoredMsg {
         author: m.author.clone(),
         kind: m.body.kind_name().into(),
         ts: m.ts,
-        body: m.body.to_json(),
+        body: match (&m.body, m.edited) {
+            (MessageBody::Text(t), Some(ed)) => serde_json::json!({ "text": t, "ed": ed }).to_string(),
+            _ => m.body.to_json(),
+        },
         status: m.status.map(|s| delivery_name(s).to_string()),
         exp: m.exp,
         reply: m.reply.clone(),
@@ -3520,7 +3842,13 @@ fn to_stored(m: &Message) -> StoredMsg {
 }
 
 fn from_stored(m: StoredMsg, eu: &str) -> Message {
+    let edited = if m.kind == "text" && m.body.contains("\"ed\"") {
+        serde_json::from_str::<serde_json::Value>(&m.body).ok().and_then(|v| v["ed"].as_i64())
+    } else {
+        None
+    };
     Message {
+        edited,
         from_me: m.author == eu,
         body: MessageBody::from_stored(&m.kind, &m.body),
         status: m.status.as_deref().and_then(parse_delivery),
@@ -3768,6 +4096,9 @@ fn placeholder_ts() -> i64 {
 pub const LISTENING_HEARTBEAT_MS: i64 = 4 * 60_000;
 /// Sem aviso novo por este tempo, considera que parou.
 pub const LISTENING_TTL_MS: i64 = 9 * 60_000;
+/// Online/ausente: repetido a cada 4 min; sem aviso por 9 min, some.
+pub const PRESENCE_HEARTBEAT_MS: i64 = 4 * 60_000;
+pub const PRESENCE_TTL_MS: i64 = 9 * 60_000;
 
 fn listening_alive(l: &Listening, recebido: i64, agora: i64) -> bool {
     if agora - recebido > LISTENING_TTL_MS {

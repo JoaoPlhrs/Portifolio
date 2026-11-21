@@ -579,7 +579,13 @@ impl Main {
                 let c = self.summary(key);
                 let fixada = c.is_some_and(|c| c.pinned);
                 let muda = c.is_some_and(|c| c.muted);
-                let mut v = vec![
+                let aberta = self.chat.as_ref().is_some_and(|c| &c.key == key);
+                let mut v = Vec::new();
+                if aberta {
+                    v.push(ui::menu_item(Icon::Eye, "Buscar na conversa", Msg::OpenSearch, false));
+                    v.push(ui::menu_item(Icon::Pin, "Mensagens fixadas", Msg::OpenPins, false));
+                }
+                v.extend([
                     ui::menu_item(Icon::Pin, if fixada { "Desafixar" } else { "Fixar no topo" }, Msg::PinChat(key.clone(), !fixada), false),
                     ui::menu_item(
                         if muda { Icon::Bell } else { Icon::BellOff },
@@ -587,7 +593,7 @@ impl Main {
                         Msg::MuteChat(key.clone(), !muda),
                         false,
                     ),
-                ];
+                ]);
                 if c.is_some_and(|c| c.unread > 0) {
                     v.push(ui::menu_item(Icon::Checks, "Marcar como lida", Msg::MarkRead(key.clone()), false));
                 }
@@ -608,6 +614,7 @@ impl Main {
                 vec![
                     ui::menu_item(Icon::Info, "Dados do grupo", Msg::OpenGroupInfo(lid.clone()), false),
                     ui::menu_item(Icon::UserPlus, "Convidar pessoas", Msg::OpenInvite(lid.clone()), false),
+                    ui::menu_item(Icon::Sparkle, "Cargos", Msg::OpenRoles(lid.clone()), false),
                     ui::menu_item(
                         if muda { Icon::Bell } else { Icon::BellOff },
                         if muda { "Ativar notificações" } else { "Silenciar grupo" },
@@ -637,6 +644,9 @@ impl Main {
                         )),
                     }
                     if let Some(g) = self.group(lid) {
+                        if g.meta.is_admin(&me) {
+                            v.push(ui::menu_item(Icon::Sparkle, "Cargos…", Msg::OpenMemberRoles(lid.clone(), pk.clone()), false));
+                        }
                         if g.meta.is_admin(&me) && g.meta.owner != *pk {
                             let admin = g.meta.is_admin(pk);
                             v.push(ui::menu_item(
@@ -691,7 +701,17 @@ impl Main {
             v.push(ui::menu_item(Icon::Reply, "Responder", Msg::Reply(m.id.clone()), false));
         }
         if let MessageBody::Text(txt) = &m.body {
+            if m.from_me && self.can_write(&c.key) {
+                v.push(ui::menu_item(Icon::Edit, "Editar", Msg::EditStart(m.id.clone()), false));
+            }
             v.push(ui::menu_item(Icon::Copy, "Copiar texto", Msg::Copy(txt.clone()), false));
+        }
+        if matches!(m.body, MessageBody::Poll { .. }) {
+            v.push(ui::menu_item(Icon::Users, "Ver quem votou", Msg::OpenVoters(m.id.clone()), false));
+        }
+        if !apagada && !m.body.is_system() && self.can_pin(&c.key) {
+            let fixada = c.pins.contains(&m.id);
+            v.push(ui::menu_item(Icon::Pin, if fixada { "Desafixar" } else { "Fixar na conversa" }, Msg::PinMsg(m.id.clone(), !fixada), false));
         }
         if let MessageBody::Media(x) = &m.body {
             if x.ready && x.kind == jm_core::messages::MediaKind::Image {
@@ -702,6 +722,14 @@ impl Main {
             v.push(ui::menu_item(Icon::Trash, "Apagar…", Msg::AskDelete(m.id.clone()), true));
         }
         v
+    }
+
+    /// Pode fixar mensagens: em conversa a dois, sempre; em grupo, só admins.
+    pub fn can_pin(&self, key: &str) -> bool {
+        match key.strip_prefix("g:").and_then(|r| r.split(':').next()) {
+            Some(lid) => self.group(lid).is_some_and(|g| g.meta.is_admin(&self.me_pk())),
+            None => self.can_write(key),
+        }
     }
 
     /// A pessoa pode escrever nesta conversa (contato aceito ou canal de grupo).
