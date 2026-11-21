@@ -138,6 +138,7 @@ pub enum Toggle {
     LockScreenshots,
     ForceRelay,
     Presence,
+    LinkPreviews,
 }
 
 /// Escolhas de uma lista (como o `choose` do celular).
@@ -407,6 +408,8 @@ pub enum Modal {
     Share { sources: Vec<Source> },
     Crop(CropState),
     Search { all: Vec<CoreMessage>, query: String },
+    Forward { id: String, query: String },
+    ViewOnce { handle: image::Handle },
     Pins { list: Vec<CoreMessage> },
     NewPoll { q: String, opts: Vec<String>, multi: bool },
     Voters { id: String },

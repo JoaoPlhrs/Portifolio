@@ -172,6 +172,10 @@ pub struct Message {
     pub exp: Option<i64>,
     /// Quando foi editada pela última vez (ms), se foi.
     pub edited: Option<i64>,
+    /// Encaminhada de outra conversa.
+    pub fwd: bool,
+    /// Prévia do link (feita por quem mandou).
+    pub lp: Option<crate::messages::LinkPreview>,
 }
 
 /// Dados de um convite, guardados na própria mensagem até a pessoa aceitar.
@@ -389,6 +393,9 @@ pub struct Settings {
     /// Mostrar aos contatos quando estou online (e ver o deles).
     #[serde(default = "sim")]
     pub presence: bool,
+    /// Gerar prévia dos links que eu mando (meu aparelho acessa o site).
+    #[serde(default = "sim")]
+    pub link_previews: bool,
 }
 
 fn sim() -> bool {
@@ -410,6 +417,7 @@ impl Default for Settings {
             sounds: true,
             lock_screenshots: false,
             presence: true,
+            link_previews: true,
         }
     }
 }
@@ -429,6 +437,12 @@ pub struct MediaMeta {
     pub th: Option<String>,
     /// Quando é um som próprio do soundboard.
     pub sb: Option<SoundMeta>,
+    /// Nome do arquivo (documentos).
+    pub name: Option<String>,
+    /// Visualização única (fotos e áudios).
+    pub view_once: bool,
+    /// Encaminhada de outra conversa.
+    pub fwd: bool,
 }
 
 /// Contas e chaves exportáveis.
@@ -926,6 +940,8 @@ impl Engine {
                 self.add_msg(
                     &key,
                     Message {
+                        fwd: protocol::tag_value(r, "fwd").is_some(),
+                        lp: protocol::tag_value(r, "lp").and_then(|j| serde_json::from_str::<crate::messages::LinkPreview>(j).ok()).and_then(|l| l.clean()),
                         edited: None,
                         id: rid,
                         chat: key.clone(),
@@ -1057,6 +1073,7 @@ impl Engine {
                 self.apply_delete(key, &ids.into_iter().take(100).collect::<Vec<_>>(), from)?;
             }
             AppMessage::Edit { id, x } => self.apply_edit(key, &id, &x, from, ts)?,
+            AppMessage::ViewOnceOpened { id } if !mine => self.mark_view_once_opened(key, &id, true)?,
             AppMessage::Pin { id, on } => self.apply_pin(key, &id, on != 0)?,
             AppMessage::Poll { q, o, m } => {
                 if !mine {
@@ -1117,6 +1134,8 @@ impl Engine {
                 self.add_msg(
                     key,
                     Message {
+                        fwd: false,
+                        lp: None,
                         edited: None,
                         id: rid,
                         chat: key.into(),
@@ -1142,6 +1161,8 @@ impl Engine {
                 self.add_msg(
                     key,
                     Message {
+                        fwd: false,
+                        lp: None,
                         edited: None,
                         id: rid,
                         chat: key.into(),
@@ -1201,6 +1222,8 @@ impl Engine {
                 self.add_msg(
                     &key,
                     Message {
+                        fwd: protocol::tag_value(r, "fwd").is_some(),
+                        lp: protocol::tag_value(r, "lp").and_then(|j| serde_json::from_str::<crate::messages::LinkPreview>(j).ok()).and_then(|l| l.clean()),
                         edited: None,
                         id: rid,
                         chat: key.clone(),
@@ -1362,6 +1385,8 @@ impl Engine {
                     self.add_msg(
                         &key,
                         Message {
+                            fwd: false,
+                            lp: None,
                             edited: None,
                             id: rid.into(),
                             chat: key.clone(),
@@ -1491,11 +1516,13 @@ impl Engine {
     pub fn preview(&self, m: &Message) -> String {
         match &m.body {
             MessageBody::Text(t) => t.clone(),
+            MessageBody::Media(md) if md.vo => if md.kind == MediaKind::Audio { "Áudio de visualização única".into() } else { "Foto de visualização única".into() },
             MessageBody::Media(md) => match (&md.sb, md.kind) {
                 (Some(sb), _) => format!("Som: {}", sb.n),
                 (None, MediaKind::Audio) => "Mensagem de voz".into(),
                 (None, MediaKind::Image) if md.mime.to_ascii_lowercase().starts_with("image/gif") => "GIF".into(),
                 (None, MediaKind::Image) => "Foto".into(),
+                (None, MediaKind::File) => format!("Arquivo: {}", md.name.clone().unwrap_or_default()),
             },
             MessageBody::Sound { .. } => "Som do soundboard".into(),
             MessageBody::Invite { name, .. } => format!("Convite para {name}"),
@@ -1875,15 +1902,34 @@ impl Engine {
 
     /// Manda texto, respondendo a outra mensagem.
     pub async fn send_text_with(self: &Arc<Self>, chat_key: &str, text: &str, reply: Option<&str>) -> Result<Message> {
+        self.send_text_full(chat_key, text, reply, false, None).await
+    }
+
+    /// Texto com tudo: resposta, encaminhada e prévia do link.
+    pub async fn send_text_full(
+        self: &Arc<Self>,
+        chat_key: &str,
+        text: &str,
+        reply: Option<&str>,
+        fwd: bool,
+        lp: Option<crate::messages::LinkPreview>,
+    ) -> Result<Message> {
         let text: String = text.trim().chars().take(6000).collect();
         if text.is_empty() {
             return Err(erro("mensagem vazia"));
         }
         self.check_group_joined(chat_key)?;
-        let tags = match reply.filter(|r| is_hex64(r)) {
+        let mut tags = match reply.filter(|r| is_hex64(r)) {
             Some(r) => vec![Tag::parse(["e", r, "", "reply"]).map_err(|e| erro(e.to_string()))?],
             None => Vec::new(),
         };
+        if fwd {
+            tags.push(Tag::custom("fwd", ["1"]));
+        }
+        let lp = lp.and_then(|l| l.clean());
+        if let Some(l) = &lp {
+            tags.push(Tag::custom("lp", [serde_json::to_string(l).unwrap_or_default()]));
+        }
         let b = self.build(chat_key, KIND_TEXT, text.clone(), tags, BuildOpts::default())?;
         self.ensure_dm_contact(chat_key).await?;
         let msg = Message {
@@ -1898,6 +1944,8 @@ impl Engine {
             reply: reply.map(|s| s.to_string()),
             reacts: BTreeMap::new(),
             exp: None,
+            fwd,
+            lp,
         };
         self.local_send(chat_key, msg, &b).await
     }
@@ -1931,6 +1979,8 @@ impl Engine {
         let b = self.build(chat_key, KIND_APP, AppMessage::Sound { id: id.into() }.to_json(), Vec::new(), BuildOpts::default())?;
         self.ensure_dm_contact(chat_key).await?;
         let msg = Message {
+            fwd: false,
+            lp: None,
             edited: None,
             id: b.id.clone(),
             chat: chat_key.into(),
@@ -1972,6 +2022,95 @@ impl Engine {
         let b = self.build(chat_key, KIND_REACTION, conteudo, tags, BuildOpts { no_ttl: true, ..Default::default() })?;
         self.publish(&b).await;
         Ok(())
+    }
+
+    /* ---------------- visualização única e encaminhar ---------------- */
+
+    /// Marca a mídia de visualização única como aberta e apaga os bytes.
+    /// `by_peer`: quem abriu foi a outra pessoa (aviso chegou pela rede).
+    fn mark_view_once_opened(&self, key: &str, id: &str, by_peer: bool) -> Result<()> {
+        if !is_hex64(id) {
+            return Ok(());
+        }
+        let eu = self.pk_hex();
+        let msg = {
+            let store = self.store.lock().unwrap();
+            let Some(sm) = store.get_msg(id)? else { return Ok(()) };
+            if sm.chat != key {
+                return Ok(());
+            }
+            let mut m = from_stored(sm, &eu);
+            // O aviso de "abriu" só vale para quem mandou.
+            if by_peer && !m.from_me {
+                return Ok(());
+            }
+            let MessageBody::Media(info) = &mut m.body else { return Ok(()) };
+            if !info.vo || info.opened {
+                return Ok(());
+            }
+            info.opened = true;
+            info.th = None;
+            store.delete_media(&info.mid)?;
+            store.update_msg(&to_stored(&m))?;
+            m
+        };
+        let _ = self.events.send(EngineEvent::MessageChanged { chat: key.into(), message: Box::new(msg) });
+        Ok(())
+    }
+
+    /// Abre uma mídia de visualização única recebida: devolve os bytes uma
+    /// vez e apaga em seguida. Em conversa a dois, avisa quem mandou.
+    pub async fn open_view_once(self: &Arc<Self>, chat_key: &str, id: &str) -> Result<Vec<u8>> {
+        let m = self.message(id).ok_or_else(|| erro("mensagem não encontrada"))?;
+        let MessageBody::Media(info) = &m.body else { return Err(erro("não é mídia")) };
+        if !info.vo || info.opened || m.from_me {
+            return Err(erro("Esta mídia já foi aberta."));
+        }
+        if !info.ready {
+            return Err(erro("Ainda chegando…"));
+        }
+        let bytes = self.media_bytes(&info.mid).ok_or_else(|| erro("mídia indisponível"))?;
+        self.mark_view_once_opened(chat_key, id, false)?;
+        if chat_key.starts_with("dm:") {
+            let _ = self
+                .send_app(chat_key, &AppMessage::ViewOnceOpened { id: id.into() }, BuildOpts { no_ttl: true, no_self_copy: true, ..Default::default() })
+                .await;
+        }
+        Ok(bytes)
+    }
+
+    /// Encaminha uma mensagem (texto, foto, áudio, arquivo ou som) para outra
+    /// conversa. Visualização única não pode ser encaminhada.
+    pub async fn forward(self: &Arc<Self>, id: &str, to: &str) -> Result<Message> {
+        let m = self.message(id).ok_or_else(|| erro("mensagem não encontrada"))?;
+        match &m.body {
+            MessageBody::Text(t) => self.send_text_full(to, t, None, true, m.lp.clone()).await,
+            MessageBody::Sound { id: s } => self.send_sound(to, s).await,
+            MessageBody::Media(info) => {
+                if info.vo {
+                    return Err(erro("Visualização única não pode ser encaminhada."));
+                }
+                if !info.ready {
+                    return Err(erro("A mídia ainda não chegou inteira."));
+                }
+                let bytes = self.media_bytes(&info.mid).ok_or_else(|| erro("mídia indisponível"))?;
+                let meta = MediaMeta {
+                    kind: Some(info.kind),
+                    mime: info.mime.clone(),
+                    dur: info.dur.map(|d| d as f64),
+                    wf: info.wf.clone(),
+                    w: info.w,
+                    h: info.h,
+                    th: info.th.clone(),
+                    sb: info.sb.clone(),
+                    name: info.name.clone(),
+                    view_once: false,
+                    fwd: true,
+                };
+                self.send_media(to, bytes, meta).await
+            }
+            _ => Err(erro("Este tipo de mensagem não pode ser encaminhado.")),
+        }
     }
 
     /* ---------------- editar, fixar, enquetes ---------------- */
@@ -2062,6 +2201,8 @@ impl Engine {
         self.add_msg(
             key,
             Message {
+                fwd: false,
+                lp: None,
                 id,
                 chat: key.into(),
                 author: from.into(),
@@ -2091,6 +2232,8 @@ impl Engine {
         let b = self.build(chat_key, KIND_APP, app.to_json(), Vec::new(), BuildOpts::default())?;
         self.ensure_dm_contact(chat_key).await?;
         let msg = Message {
+            fwd: false,
+            lp: None,
             id: b.id.clone(),
             chat: chat_key.into(),
             author: self.pk_hex(),
@@ -2517,13 +2660,16 @@ impl Engine {
     /// Manda foto, áudio ou som próprio. O cabeçalho sai na hora; os blocos
     /// seguem em segundo plano, avisando o progresso.
     pub async fn send_media(self: &Arc<Self>, chat_key: &str, bytes: Vec<u8>, meta: MediaMeta) -> Result<Message> {
-        if bytes.len() > media::MAX_MEDIA {
-            return Err(erro("Arquivo grande demais"));
+        let kind = meta.kind.ok_or_else(|| erro("tipo de mídia não informado"))?;
+        if bytes.len() > media::max_size(kind) {
+            return Err(erro(if kind == MediaKind::File { "Arquivo grande demais (até 5 MB)" } else { "Arquivo grande demais" }));
         }
-        if !media::mime_ok(&meta.mime) {
+        let tipo_ok = if kind == MediaKind::File { media::file_mime_ok(&meta.mime) } else { media::mime_ok(&meta.mime) };
+        if !tipo_ok {
             return Err(erro("Formato não suportado"));
         }
-        let kind = meta.kind.ok_or_else(|| erro("tipo de mídia não informado"))?;
+        let nome = (kind == MediaKind::File).then(|| media::clean_file_name(meta.name.as_deref().unwrap_or("arquivo")));
+        let vo = meta.view_once && kind != MediaKind::File && meta.sb.is_none();
         self.check_group_joined(chat_key)?;
         self.ensure_dm_contact(chat_key).await?;
 
@@ -2545,10 +2691,13 @@ impl Engine {
             wf: meta.wf.as_ref().map(|v| v.iter().take(48).map(|x| i64::from(*x)).collect()),
             w: meta.w.filter(|_| meta.h.is_some()),
             h: meta.h.filter(|_| meta.w.is_some()),
-            th: meta.th.clone().filter(|t| t.len() < media::THUMB_MAX),
+            th: meta.th.clone().filter(|t| t.len() < media::THUMB_MAX && !vo),
             sb: sb.clone(),
+            name: nome.clone(),
+            vo: vo.then_some(1),
         };
-        let b = self.build(chat_key, KIND_APP, AppMessage::MediaHeader(head.clone()).to_json(), Vec::new(), BuildOpts::default())?;
+        let tags = if meta.fwd { vec![Tag::custom("fwd", ["1"])] } else { Vec::new() };
+        let b = self.build(chat_key, KIND_APP, AppMessage::MediaHeader(head.clone()).to_json(), tags, BuildOpts::default())?;
         self.store.lock().unwrap().put_media(&mid, &b.id, chat_key, &meta.mime, &bytes)?;
         let info = MediaInfo {
             mid: mid.clone(),
@@ -2566,8 +2715,13 @@ impl Engine {
             got: n,
             ready: true,
             err: false,
+            name: nome,
+            vo,
+            opened: false,
         };
         let msg = Message {
+            fwd: meta.fwd,
+            lp: None,
             edited: None,
             id: b.id.clone(),
             chat: chat_key.into(),
@@ -2624,6 +2778,8 @@ impl Engine {
         let added = self.add_msg(
             key,
             Message {
+                fwd: protocol::tag_value(r, "fwd").is_some(),
+                lp: None,
                 edited: None,
                 id: rid,
                 chat: key.into(),
@@ -3179,6 +3335,8 @@ impl Engine {
             pic_v: g.pic_v,
         };
         let msg = Message {
+            fwd: false,
+            lp: None,
             edited: None,
             id: b.id.clone(),
             chat: chat.clone(),
@@ -3785,6 +3943,8 @@ impl Engine {
 
 fn sys_msg(id: &str, chat: &str, who: &str, from_me: bool, ts: i64, sys: &str, v: i64) -> Message {
     Message {
+        fwd: false,
+        lp: None,
         edited: None,
         id: id.into(),
         chat: chat.into(),
@@ -3843,9 +4003,23 @@ fn to_stored(m: &Message) -> StoredMsg {
         author: m.author.clone(),
         kind: m.body.kind_name().into(),
         ts: m.ts,
-        body: match (&m.body, m.edited) {
-            (MessageBody::Text(t), Some(ed)) => serde_json::json!({ "text": t, "ed": ed }).to_string(),
-            _ => m.body.to_json(),
+        body: {
+            let base = match (&m.body, m.edited) {
+                (MessageBody::Text(t), Some(ed)) => serde_json::json!({ "text": t, "ed": ed }).to_string(),
+                _ => m.body.to_json(),
+            };
+            if m.fwd || m.lp.is_some() {
+                let mut v: serde_json::Value = serde_json::from_str(&base).unwrap_or_else(|_| serde_json::json!({}));
+                if m.fwd {
+                    v["fwd"] = true.into();
+                }
+                if let Some(lp) = &m.lp {
+                    v["lp"] = serde_json::to_value(lp).unwrap_or_default();
+                }
+                v.to_string()
+            } else {
+                base
+            }
         },
         status: m.status.map(|s| delivery_name(s).to_string()),
         exp: m.exp,
@@ -3860,8 +4034,16 @@ fn from_stored(m: StoredMsg, eu: &str) -> Message {
     } else {
         None
     };
+    let (fwd, lp) = if m.body.contains("\"fwd\"") || m.body.contains("\"lp\"") {
+        let v: serde_json::Value = serde_json::from_str(&m.body).unwrap_or_default();
+        (v["fwd"].as_bool().unwrap_or(false), serde_json::from_value::<crate::messages::LinkPreview>(v["lp"].clone()).ok())
+    } else {
+        (false, None)
+    };
     Message {
         edited,
+        fwd,
+        lp,
         from_me: m.author == eu,
         body: MessageBody::from_stored(&m.kind, &m.body),
         status: m.status.as_deref().and_then(parse_delivery),

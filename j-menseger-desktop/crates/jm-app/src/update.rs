@@ -101,6 +101,10 @@ impl Main {
 
     /// Manda uma foto ou GIF já preparado na conversa aberta.
     fn send_draft(&mut self, d: PhotoDraft) -> Task<Msg> {
+        self.send_draft_opt(d, false)
+    }
+
+    fn send_draft_opt(&mut self, d: PhotoDraft, view_once: bool) -> Task<Msg> {
         let Some(key) = self.open_key() else { return Task::none() };
         let e = self.eng();
         let meta = MediaMeta {
@@ -109,6 +113,7 @@ impl Main {
             w: Some(d.w),
             h: Some(d.h),
             th: Some(d.th.clone()),
+            view_once,
             ..Default::default()
         };
         done(async move { e.send_media(&key, d.bytes.to_vec(), meta).await.map(|_| ()).map_err(s) })
@@ -1517,6 +1522,79 @@ impl Main {
                 c.editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
                 iced::widget::operation::focus(EDITOR_ID)
             }
+            Msg::SendTextReady(key, texto, reply, lp) => {
+                let e = self.eng();
+                Task::batch([done(async move { e.send_text_full(&key, &texto, reply.as_deref(), false, lp).await.map(|_| ()).map_err(s) }), to_bottom()])
+            }
+            Msg::PickFile => {
+                self.close_overlays();
+                Task::perform(platform::pick_file(), Msg::FilePicked)
+            }
+            Msg::FilePicked(r) => match r {
+                Ok(Some((nome, mime, bytes))) => {
+                    let Some(key) = self.open_key() else { return Task::none() };
+                    let e = self.eng();
+                    let meta = MediaMeta { kind: Some(MediaKind::File), mime, name: Some(nome), ..Default::default() };
+                    Task::batch([done(async move { e.send_media(&key, bytes, meta).await.map(|_| ()).map_err(s) }), to_bottom()])
+                }
+                Ok(None) => Task::none(),
+                Err(e) => self.toast_t(&e),
+            },
+            Msg::SaveFile(mid, nome) => {
+                self.close_overlays();
+                let Some(bytes) = self.engine.media_bytes(&mid) else { return self.toast_t("O arquivo ainda não chegou inteiro.") };
+                toast_done(platform::save_file(bytes, nome))
+            }
+            Msg::OpenForward(id) => {
+                self.close_overlays();
+                self.modal = Some(Modal::Forward { id, query: String::new() });
+                Task::none()
+            }
+            Msg::ForwardQuery(q) => {
+                if let Some(Modal::Forward { query, .. }) = &mut self.modal {
+                    *query = q.chars().take(40).collect();
+                }
+                Task::none()
+            }
+            Msg::ForwardTo(to) => {
+                let Some(Modal::Forward { id, .. }) = self.modal.take() else { return Task::none() };
+                let e = self.eng();
+                let nome = self.chat_title(&to);
+                toast_done(async move { e.forward(&id, &to).await.map(|_| format!("Encaminhada para {nome}")).map_err(s) })
+            }
+            Msg::OpenViewOnce(id) => {
+                self.close_overlays();
+                let Some(key) = self.open_key() else { return Task::none() };
+                let e = self.eng();
+                let i2 = id.clone();
+                Task::perform(async move { e.open_view_once(&key, &i2).await.map_err(s) }, move |r| Msg::ViewOnceBytes(id.clone(), r))
+            }
+            Msg::ViewOnceBytes(id, r) => {
+                let bytes = match r {
+                    Ok(b) => b,
+                    Err(e) => return self.toast_t(&e),
+                };
+                let audio = self.chat.as_ref().and_then(|c| c.messages.iter().find(|m| m.id == id)).is_some_and(|m| matches!(&m.body, MessageBody::Media(x) if x.kind == MediaKind::Audio));
+                if audio {
+                    let mid = format!("vo:{id}");
+                    return Task::perform(
+                        async move {
+                            let pcm = tokio::task::spawn_blocking(move || jm_media::audiofile::decode(&bytes).map(|p| p.samples)).await;
+                            (mid, pcm)
+                        },
+                        |(mid, r)| match r {
+                            Ok(Ok(pcm)) => Msg::VoiceReady(mid, Arc::new(pcm)),
+                            _ => Msg::Toast("Não deu para tocar esse áudio.".into()),
+                        },
+                    );
+                }
+                self.modal = Some(Modal::ViewOnce { handle: image::Handle::from_bytes(bytes) });
+                Task::none()
+            }
+            Msg::SendPhotoOnce => {
+                let Some(Modal::PhotoPreview(d)) = self.modal.take() else { return Task::none() };
+                self.send_draft_opt(d, true)
+            }
             Msg::BackupExport => {
                 let e = self.eng();
                 toast_done(async move {
@@ -2554,6 +2632,13 @@ impl Main {
         c.editor = text_editor::Content::new();
         let key = c.key.clone();
         self.drafts.remove(&key);
+        // Link no texto: primeiro a prévia (até ~6 s), depois a mensagem.
+        if let Some(url) = crate::linkprev::first_link(&texto).filter(|_| self.settings.link_previews) {
+            return Task::perform(
+                async move { tokio::task::spawn_blocking(move || crate::linkprev::fetch(&url)).await.ok().flatten() },
+                move |lp| Msg::SendTextReady(key.clone(), texto.clone(), reply.clone(), lp),
+            );
+        }
         Task::batch([done(async move { e.send_text_with(&key, &texto, reply.as_deref()).await.map(|_| ()).map_err(s) }), to_bottom()])
     }
 
@@ -2779,6 +2864,7 @@ impl Main {
                 Toggle::Sounds => s.sounds = on,
                 Toggle::LockScreenshots => s.lock_screenshots = on,
                 Toggle::Presence => s.presence = on,
+                Toggle::LinkPreviews => s.link_previews = on,
                 Toggle::ForceRelay => s.force_relay = on,
             })
             .await

@@ -187,6 +187,8 @@ fn msg_from_json(v: &Value, eu: &str) -> Option<Message> {
         .map(|(pk, e)| (pk, clamp_keep(&e, 16)))
         .collect();
     Some(Message {
+        fwd: false,
+        lp: None,
         from_me: author == eu,
         status: v["status"].as_str().and_then(parse_delivery),
         reply: v["reply"].as_str().filter(|s| is_hex64(s)).map(|s| s.to_string()),
@@ -667,6 +669,8 @@ mod tests {
     fn mensagem_ida_e_volta_no_formato_neutro() {
         let eu = "a".repeat(64);
         let m = Message {
+            fwd: false,
+            lp: None,
             id: "b".repeat(64),
             chat: format!("dm:{}", "c".repeat(64)),
             author: eu.clone(),

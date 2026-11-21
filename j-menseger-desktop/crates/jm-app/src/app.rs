@@ -115,6 +115,16 @@ pub enum Msg {
     RoleToggle(String, String, String, bool),
     MentionPick(String),
     BackupExport,
+    PickFile,
+    FilePicked(Result<Option<(String, String, Vec<u8>)>, String>),
+    SaveFile(String, String),
+    OpenForward(String),
+    ForwardQuery(String),
+    ForwardTo(String),
+    OpenViewOnce(String),
+    ViewOnceBytes(String, Result<Vec<u8>, String>),
+    SendPhotoOnce,
+    SendTextReady(String, String, Option<String>, Option<jm_core::messages::LinkPreview>),
     BackupImport,
 
     /* geral */

@@ -417,6 +417,14 @@ fn privacy(m: &Main) -> El<'_> {
                 ),
                 ui::setting(Some(Icon::Chat), "Mostrar quando estou digitando", None, Trail::Switch(s.typing, |v| Msg::Toggle(Toggle::Typing, v)), None, false),
                 ui::setting(
+                    Some(Icon::Share),
+                    "Prévia dos links que eu mando",
+                    Some("Seu computador abre o site para pegar título e imagem; quem recebe não acessa nada".into()),
+                    Trail::Switch(s.link_previews, |v| Msg::Toggle(Toggle::LinkPreviews, v)),
+                    None,
+                    false,
+                ),
+                ui::setting(
                     Some(Icon::Eye),
                     "Mostrar quando estou online",
                     Some("Se desligar, você também não vê quem está online".into()),

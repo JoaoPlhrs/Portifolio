@@ -114,7 +114,13 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
                 container(image(m.anim_frame(PREVIA_GIF).filter(|_| is_gif_mime(&d.mime)).unwrap_or_else(|| d.handle.clone())).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fixed((m.size.height - 320.0).clamp(160.0, 420.0))))
                     .style(t::rounded(Color::BLACK, 10.0)),
                 text(format!("{}×{} · {}", d.w, d.h, t::bytes_label(d.bytes.len() as i64))).size(12.5).color(t::FG_DIM),
-                row![ui::fill(), ui::ghost(None, "Cancelar", Some(Msg::Key(Key::Escape))), ui::primary(Some(Icon::Send), "Enviar", Some(Msg::SendPhoto))].spacing(8),
+                row![
+                    if is_gif_mime(&d.mime) { El::from(Space::new()) } else { ui::secondary(Some(Icon::Eye), "Visualização única", Some(Msg::SendPhotoOnce)).into() },
+                    ui::fill(),
+                    ui::ghost(None, "Cancelar", Some(Msg::Key(Key::Escape))),
+                    ui::primary(Some(Icon::Send), "Enviar", Some(Msg::SendPhoto))
+                ]
+                .spacing(8),
             ]
             .spacing(12)
             .into(),
@@ -162,6 +168,17 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         Modal::Share { sources } => share(m, sources),
         Modal::Crop(c) => crop(m, c),
         Modal::Search { all, query } => search(m, all, query),
+        Modal::Forward { query, .. } => forward(m, query),
+        Modal::ViewOnce { handle } => card(
+            640.0,
+            column![
+                head("Visualização única", Some("Ao fechar, a foto some deste aparelho.")),
+                container(image(handle.clone()).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fixed((m.size.height - 240.0).clamp(200.0, 560.0))))
+                    .style(t::rounded(Color::BLACK, 10.0)),
+            ]
+            .spacing(12)
+            .into(),
+        ),
         Modal::Pins { list } => pins(m, list),
         Modal::NewPoll { q, opts, multi } => new_poll(q, opts, *multi),
         Modal::Voters { id } => voters(m, id),
@@ -171,6 +188,51 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
 }
 
 pub const SEARCH_ID: &str = "busca-conversa";
+
+fn forward<'a>(m: &'a Main, query: &'a str) -> El<'a> {
+    let q = sem_acento(query.trim());
+    let mut col = column![].spacing(2);
+    let mut n = 0;
+    for c in &m.chats {
+        let titulo = match c.key.strip_prefix("g:").and_then(|r| r.split(':').next()).and_then(|lid| m.group(lid)) {
+            Some(g) => format!("{} · {}", m.chat_title(&c.key), g.meta.name),
+            None => m.chat_title(&c.key),
+        };
+        if !q.is_empty() && !sem_acento(&titulo).contains(&q) {
+            continue;
+        }
+        if let Some(pk) = &c.peer {
+            if m.contact_status(pk) != Some(ContactStatus::Ok) {
+                continue;
+            }
+        }
+        n += 1;
+        if n > 60 {
+            break;
+        }
+        let ic = if c.is_group { Icon::Hash } else { Icon::User };
+        col = col.push(
+            button(row![icon(ic, 16.0, t::FG_DIM), text(titulo).size(14.5).color(t::FG)].spacing(10).align_y(Alignment::Center))
+                .padding([9, 10])
+                .width(Length::Fill)
+                .style(t::row_item(false))
+                .on_press(Msg::ForwardTo(c.key.clone())),
+        );
+    }
+    if n == 0 {
+        col = col.push(ui::note("Nenhuma conversa encontrada."));
+    }
+    card(
+        440.0,
+        column![
+            head("Encaminhar para…", None),
+            iced::widget::text_input("Buscar conversa", query).on_input(Msg::ForwardQuery).padding([10, 12]).size(14.5).style(t::input),
+            limited(m, col.into()),
+        ]
+        .spacing(12)
+        .into(),
+    )
+}
 pub const ROLE_NAME_ID: &str = "nome-cargo";
 
 fn sem_acento(s: &str) -> String {

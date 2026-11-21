@@ -293,6 +293,9 @@ fn bubble<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, mostrar_nome: 
         let cor = role_color(m, &c.key, &msg.author).unwrap_or_else(|| name_color(m.tone_of(&msg.author)));
         dentro = dentro.push(text(m.name_of(&msg.author)).size(13).font(SEMI).color(cor));
     }
+    if msg.fwd {
+        dentro = dentro.push(row![icon(Icon::Share, 12.0, t::FG_DIM), text("Encaminhada").size(12).font(SEMI).color(t::FG_DIM)].spacing(5).align_y(Alignment::Center));
+    }
     if let Some(r) = &msg.reply {
         dentro = dentro.push(quote(m, c, r, mine));
     }
@@ -314,7 +317,9 @@ fn bubble<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, mostrar_nome: 
             let (e, n) = info.map(|s| (s.emoji, s.name)).unwrap_or(("🔊".into(), "Som".into()));
             sound_tile(e, n, Msg::PlaySound(id.clone()))
         }
+        MessageBody::Media(x) if x.vo => view_once(msg, x),
         MessageBody::Media(x) => match (x.kind, &x.sb) {
+            (MediaKind::File, _) => file_tile(m, c, msg, x),
             (MediaKind::Image, _) => photo(m, c, msg, x),
             (MediaKind::Audio, Some(sb)) => {
                 if x.ready {
@@ -329,6 +334,9 @@ fn bubble<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, mostrar_nome: 
         MessageBody::System { .. } => Space::new().into(),
     };
     dentro = dentro.push(corpo);
+    if let Some(lp) = &msg.lp {
+        dentro = dentro.push(link_card(m, lp));
+    }
     // O balão acompanha o conteúdo; a hora fica no canto direito de baixo.
     let balao = column![dentro, footer(msg, false)].spacing(5).align_x(Alignment::End);
     container(balao).padding([8, 11]).max_width(540).style(t::bubble(mine)).into()
@@ -548,6 +556,66 @@ fn fit(w: Option<u32>, h: Option<u32>, max_w: f32, max_h: f32) -> (f32, f32) {
     let (w, h) = (w.unwrap_or(4).max(1) as f32, h.unwrap_or(3).max(1) as f32);
     let k = (max_w / w).min(max_h / h).min(1.0).max(0.05);
     ((w * k).max(120.0).min(max_w), (h * k).max(90.0).min(max_h))
+}
+
+/// Cartão da prévia do link (título, descrição e miniatura vieram com a mensagem).
+fn link_card<'a>(m: &'a Main, lp: &'a jm_core::messages::LinkPreview) -> El<'a> {
+    let site = lp.u.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+    let mut col = column![
+        text(site).size(11.5).color(t::FG_DIM),
+        text(ui::ellipsis(&lp.t, 120)).size(14).font(SEMI).color(t::READ_BLUE),
+    ]
+    .spacing(2)
+    .width(Length::Fill);
+    if !lp.d.is_empty() {
+        col = col.push(text(ui::ellipsis(&lp.d, 180)).size(12.5).color(t::FG_DIM));
+    }
+    let mut r = row![container(Space::new()).width(3).height(Length::Fill).style(t::rounded(t::READ_BLUE, 2.0)), col].spacing(10).height(Length::Shrink);
+    if let Some(h) = lp.i.as_deref().and_then(|i| m.pic(Some(i))) {
+        r = r.push(image(h).width(72).height(72).content_fit(ContentFit::Cover).border_radius(6.0));
+    }
+    button(container(r).padding([8, 10]).max_width(420).style(t::quote(false))).padding(0).style(t::ghost).on_press(Msg::OpenUrl(lp.u.clone())).into()
+}
+
+/// Documento: ícone, nome, tamanho e baixar.
+fn file_tile<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, x: &'a jm_core::media::MediaInfo) -> El<'a> {
+    let nome = x.name.clone().unwrap_or_else(|| "arquivo".into());
+    let ext = nome.rsplit_once('.').map(|(_, e)| e.to_ascii_uppercase()).unwrap_or_else(|| "ARQ".into());
+    let selo = container(text(ui::ellipsis(&ext, 4)).size(11).font(BOLD).color(t::accent_ink())).center(42).style(t::rounded(t::accent(), 8.0));
+    let mut info = column![text(ui::ellipsis(&nome, 40)).size(14).font(SEMI).color(t::FG), text(t::bytes_label(x.size as i64)).size(12).color(t::FG_DIM)].spacing(2);
+    if !x.ready {
+        info = info.push(progress_line(m, c, msg, x));
+    }
+    let mut r = row![selo, info.width(Length::Fill)].spacing(10).align_y(Alignment::Center).width(300);
+    if x.ready {
+        r = r.push(ui::icon_button_sm(Icon::Download, "Salvar arquivo", Some(Msg::SaveFile(x.mid.clone(), nome.clone()))));
+    }
+    r.into()
+}
+
+/// Foto ou áudio de visualização única.
+fn view_once<'a>(msg: &'a CoreMessage, x: &'a jm_core::media::MediaInfo) -> El<'a> {
+    let foto = x.kind == MediaKind::Image;
+    let (txt, sub, acao) = if x.opened {
+        (if foto { "Foto aberta" } else { "Áudio ouvido" }, if msg.from_me { "Visualização única · já foi aberta" } else { "Visualização única" }, None)
+    } else if msg.from_me {
+        (if foto { "Foto" } else { "Áudio" }, "Visualização única · ainda não aberta", None)
+    } else if !x.ready {
+        (if foto { "Foto" } else { "Áudio" }, "Visualização única · chegando…", None)
+    } else {
+        (if foto { "Foto" } else { "Áudio" }, "Visualização única · toque para abrir", Some(Msg::OpenViewOnce(msg.id.clone())))
+    };
+    let circulo = container(text("1").size(13).font(BOLD).color(if x.opened { t::FG_DIM } else { t::accent() }))
+        .center(26)
+        .style(move |_| iced::widget::container::Style {
+            border: iced::Border { color: if x.opened { t::FG_FAINT } else { t::accent() }, width: 2.0, radius: 13.0.into() },
+            ..Default::default()
+        });
+    let corpo = row![circulo, column![text(txt).size(14).font(SEMI).color(t::FG), text(sub).size(12).color(t::FG_DIM)].spacing(1)].spacing(10).align_y(Alignment::Center);
+    match acao {
+        Some(a) => button(corpo).padding([4, 2]).style(t::ghost).on_press(a).into(),
+        None => corpo.into(),
+    }
 }
 
 fn photo<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, x: &'a jm_core::media::MediaInfo) -> El<'a> {
@@ -1028,6 +1096,7 @@ fn attach_popup<'a>() -> El<'a> {
         column![
             ui::menu_item(Icon::Image, "Foto do computador", Msg::PickPhoto, false),
             ui::menu_item(Icon::Image, "GIF", Msg::SetPopup(Some(Popup::Gif)), false),
+            ui::menu_item(Icon::Upload, "Arquivo (até 5 MB)", Msg::PickFile, false),
             ui::menu_item(Icon::Wave, "Som do soundboard", Msg::SetPopup(Some(Popup::Sounds)), false),
             ui::menu_item(Icon::Checks, "Enquete", Msg::OpenPoll, false),
         ]

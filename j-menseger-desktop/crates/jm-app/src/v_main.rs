@@ -706,6 +706,19 @@ impl Main {
             }
             v.push(ui::menu_item(Icon::Copy, "Copiar texto", Msg::Copy(txt.clone()), false));
         }
+        let pode_encaminhar = match &m.body {
+            MessageBody::Text(_) | MessageBody::Sound { .. } => true,
+            MessageBody::Media(x) => !x.vo && x.ready,
+            _ => false,
+        };
+        if pode_encaminhar {
+            v.push(ui::menu_item(Icon::Share, "Encaminhar", Msg::OpenForward(m.id.clone()), false));
+        }
+        if let MessageBody::Media(x) = &m.body {
+            if x.kind == jm_core::messages::MediaKind::File && x.ready {
+                v.push(ui::menu_item(Icon::Download, "Salvar arquivo", Msg::SaveFile(x.mid.clone(), x.name.clone().unwrap_or_else(|| "arquivo".into())), false));
+            }
+        }
         if matches!(m.body, MessageBody::Poll { .. }) {
             v.push(ui::menu_item(Icon::Users, "Ver quem votou", Msg::OpenVoters(m.id.clone()), false));
         }

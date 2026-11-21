@@ -9854,6 +9854,8 @@ zoo`.split(`
     ],
     Xs = 2e4,
     ci = 24e5,
+    JM_FILE_MAX = 5e6,
+    JM_FILE_MIME = /^[a-z0-9.+_-]{1,60}\/[a-z0-9.+_-]{1,60}$/i,
     Ld =
       /^(audio\/(webm|ogg|mp4|mpeg|aac)|image\/(webp|jpeg|png|gif))(;[a-z0-9=,. -]*)?$/i,
     Za = 86400,
@@ -9917,6 +9919,36 @@ zoo`.split(`
       return new TextDecoder().decode(await jmGz(new Uint8Array(a), !1));
     } catch {
       throw new Error("Backup corrompido.");
+    }
+  }
+  function jmFileName(t) {
+    let e = String(t || "")
+      .split(/[\\/]/)
+      .pop()
+      .replace(/[\u0000-\u001f<>:"|?*]/g, "")
+      .slice(0, 120)
+      .trim()
+      .replace(/^\.+/, "");
+    return e || "arquivo";
+  }
+  function jmCleanLp(t) {
+    if (!t || typeof t != "object") return null;
+    let e = String(t.u || "").trim().slice(0, 600),
+      a = ie(t.t, 140);
+    if (!/^https?:\/\//.test(e) || !a) return null;
+    let n = { u: e, t: a };
+    return (
+      (t.d = ie(t.d, 240)) && (n.d = t.d),
+      typeof t.i == "string" && t.i.length <= 4e4 && /^data:image\/(webp|jpeg|png);base64,/.test(t.i) && (n.i = t.i),
+      n
+    );
+  }
+  function jmCleanLpJson(t) {
+    if (!t) return;
+    try {
+      return jmCleanLp(JSON.parse(t)) || void 0;
+    } catch {
+      return;
     }
   }
   var JM_PRES_HEARTBEAT = 24e4, JM_PRES_TTL = 54e4;
@@ -9990,6 +10022,7 @@ zoo`.split(`
       lockScreenshots: !1,
       notifications: !0,
       presence: !0,
+      linkPreviews: !0,
     },
     Bd = {
       amigos: { text: ["geral", "fotos"], voice: ["Sala de estar"] },
@@ -10372,6 +10405,8 @@ zoo`.split(`
                 kind: "text",
                 text: ie(e.content, 6e3),
                 reply: this.replyRef(e),
+                fwd: Wa(e, "fwd") ? !0 : void 0,
+                lp: jmCleanLpJson(Wa(e, "lp")),
                 ts: e.created_at * 1e3,
                 exp: this.expOf(e),
                 status: s ? "sent" : void 0,
@@ -10450,6 +10485,9 @@ zoo`.split(`
               return;
             case "edit":
               await this.applyEdit(i, c.id, c.x, n, e.created_at);
+              return;
+            case "voo":
+              s || (await this.markVoOpened(i, c.id, !0));
               return;
             case "pin":
               await this.applyPin(i, c.id, !!c.on, n);
@@ -10579,6 +10617,8 @@ zoo`.split(`
               kind: "text",
               text: ie(e.content, 6e3),
               reply: this.replyRef(e),
+              fwd: Wa(e, "fwd") ? !0 : void 0,
+              lp: jmCleanLpJson(Wa(e, "lp")),
               ts: e.created_at * 1e3,
               exp: this.expOf(e),
               status: o ? "sent" : void 0,
@@ -10774,7 +10814,13 @@ zoo`.split(`
           case "text":
             return e.text;
           case "media":
-            return e.media && e.media.sb
+            return e.media && e.media.type === "file"
+              ? "Arquivo: " + (e.media.name || "")
+              : e.media && e.media.vo
+              ? e.media.type === "audio"
+                ? "\xC1udio de visualiza\xE7\xE3o \xFAnica"
+                : "Foto de visualiza\xE7\xE3o \xFAnica"
+              : e.media && e.media.sb
               ? "Som: " + e.media.sb.n
               : e.media && e.media.type === "audio"
                 ? "Mensagem de voz"
@@ -10996,11 +11042,12 @@ zoo`.split(`
       async retry(e, a) {
         await this.flushOutbox();
       }
-      async sendText(e, a, { reply: n } = {}) {
+      async sendText(e, a, { reply: n, fwd: jf, lp: jl } = {}) {
         if (((a = String(a || "").trim()), !a)) return null;
         a = a.slice(0, 6e3);
-        let s = n ? [["e", n, "", "reply"]] : [],
-          o = this.build(e, Ys, a, s);
+        let s = n ? [["e", n, "", "reply"]] : [];
+        (jl = jmCleanLp(jl)), jf && s.push(["fwd", "1"]), jl && s.push(["lp", JSON.stringify(jl)]);
+        let o = this.build(e, Ys, a, s);
         return (
           await this.ensureDmContact(e),
           this.localSend(
@@ -11011,6 +11058,8 @@ zoo`.split(`
               kind: "text",
               text: a,
               reply: n,
+              fwd: jf ? !0 : void 0,
+              lp: jl || void 0,
               ts: o.rumor.created_at * 1e3,
             },
             o,
@@ -11157,6 +11206,39 @@ zoo`.split(`
           try {
             await this.sendApp("dm:" + o.pk, { t: "pres", s: n }, { ephemeral: !0, selfCopy: !1, noTtl: !0 });
           } catch {}
+      }
+      // ---- Visualização única e encaminhar ----
+      async markVoOpened(e, a, n) {
+        if (typeof a != "string" || !Re.test(a)) return;
+        let s = await this.db.get("msgs", a);
+        if (!s || s.chat !== e || s.kind !== "media" || !s.media || !s.media.vo || s.media.opened) return;
+        if (n && s.from !== this.pk) return;
+        (s.media.opened = 1), delete s.media.th, await this.db.del("media", s.media.mid), await this.db.put("msgs", s), this.emit("msgUpdate", e, s);
+      }
+      /** Abre a mídia de visualização única uma vez: devolve o Blob e apaga. */
+      async openViewOnce(e, a) {
+        let n = await this.db.get("msgs", a);
+        if (!n || !n.media || !n.media.vo || n.media.opened || n.from === this.pk) throw new Error("Esta m\xEDdia j\xE1 foi aberta.");
+        if (!n.media.ready) throw new Error("Ainda chegando\u2026");
+        let s = await this.mediaBlob(n.media.mid);
+        if (!s) throw new Error("M\xEDdia indispon\xEDvel");
+        return (
+          await this.markVoOpened(e, a, !1),
+          e.startsWith("dm:") && this.sendApp(e, { t: "voo", id: a }, { noTtl: !0, selfCopy: !1 }).catch(() => {}),
+          s
+        );
+      }
+      async forward(e, a) {
+        let n = await this.db.get("msgs", e);
+        if (!n) throw new Error("Mensagem n\xE3o encontrada");
+        if (n.kind === "text") return this.sendText(a, n.text, { fwd: !0, lp: n.lp });
+        if (n.kind === "sound") return this.sendSound(a, n.snd);
+        if (n.kind !== "media" || !n.media) throw new Error("Este tipo de mensagem n\xE3o pode ser encaminhado.");
+        let s = n.media;
+        if (s.vo) throw new Error("Visualiza\xE7\xE3o \xFAnica n\xE3o pode ser encaminhada.");
+        let o = await this.mediaBlob(s.mid);
+        if (!o) throw new Error("A m\xEDdia ainda n\xE3o chegou inteira.");
+        return this.sendMedia(a, new Uint8Array(await o.arrayBuffer()), { type: s.type, mime: s.mime, dur: s.dur, wf: s.wf, w: s.w, h: s.h, th: s.th, sb: s.sb, name: s.name, fwd: !0 });
       }
       // ---- Backup e a mesma conta em vários aparelhos (mesmo formato do PC) ----
       async deviceId() {
@@ -11665,9 +11747,10 @@ zoo`.split(`
         return this.db.msgsByChat(e, a, n);
       }
       async sendMedia(e, a, n, s) {
-        if ((a instanceof Uint8Array || (a = new Uint8Array(a)), a.length > ci))
-          throw new Error("Arquivo grande demais");
-        if (!Ld.test(n.mime)) throw new Error("Formato n\xE3o suportado");
+        let jmArq = n.type === "file";
+        if ((a instanceof Uint8Array || (a = new Uint8Array(a)), a.length > (jmArq ? JM_FILE_MAX : ci)))
+          throw new Error(jmArq ? "Arquivo grande demais (at\xE9 5 MB)" : "Arquivo grande demais");
+        if (!(jmArq ? JM_FILE_MIME : Ld).test(n.mime)) throw new Error("Formato n\xE3o suportado");
         await this.ensureDmContact(e);
         let o = Ka(16),
           r = Math.ceil(a.length / Xs),
@@ -11680,10 +11763,12 @@ zoo`.split(`
             n: r,
             sha: In(a),
           };
-        n.dur && (i.dur = Math.round(n.dur)),
+        jmArq && (i.fn = jmFileName(n.name)),
+          !jmArq && n.vo && !n.sb && (i.vo = 1),
+          n.dur && (i.dur = Math.round(n.dur)),
           n.wf && (i.wf = n.wf.slice(0, 48)),
           n.w && ((i.w = n.w), (i.h = n.h)),
-          n.th && n.th.length < 3e3 && (i.th = n.th),
+          n.th && n.th.length < 3e3 && !i.vo && (i.th = n.th),
           n.sb &&
             n.type === "audio" &&
             (i.sb = {
@@ -11691,7 +11776,7 @@ zoo`.split(`
               e: ie(n.sb.e, 8) || "\u{1F50A}",
             });
         let c = new Blob([a], { type: n.mime }),
-          l = this.build(e, jt, JSON.stringify(i));
+          l = this.build(e, jt, JSON.stringify(i), n.fwd ? [["fwd", "1"]] : []);
         await this.db.put("media", {
           mid: o,
           msgId: l.rumor.id,
@@ -11711,11 +11796,13 @@ zoo`.split(`
           h: i.h,
           th: i.th,
           sb: i.sb,
+          name: i.fn,
+          vo: i.vo,
           got: r,
           ready: !0,
           sent: 0,
         };
-        u.sb || delete u.sb;
+        u.sb || delete u.sb, u.name || delete u.name, u.vo || delete u.vo;
         let d = await this.localSend(
           e,
           {
@@ -11723,6 +11810,7 @@ zoo`.split(`
             from: this.pk,
             kind: "media",
             media: u,
+            fwd: n.fwd ? !0 : void 0,
             ts: l.rumor.created_at * 1e3,
           },
           l,
@@ -11746,12 +11834,14 @@ zoo`.split(`
       async onMediaHeader(e, a, n, s, o) {
         if (typeof n.mid != "string" || !/^[0-9a-f]{32}$/.test(n.mid)) return;
         let r = parseInt(n.n, 10),
-          i = parseInt(n.size, 10);
+          i = parseInt(n.size, 10),
+          jmArq = n.type === "file",
+          jmLim = jmArq ? JM_FILE_MAX : ci;
         if (
-          !(r > 0 && r <= Math.ceil(ci / Xs)) ||
-          !(i > 0 && i <= ci) ||
-          !Ld.test(n.mime || "") ||
-          (n.type !== "audio" && n.type !== "image")
+          !(r > 0 && r <= Math.ceil(jmLim / Xs)) ||
+          !(i > 0 && i <= jmLim) ||
+          !(jmArq ? JM_FILE_MIME : Ld).test(n.mime || "") ||
+          (n.type !== "audio" && n.type !== "image" && !jmArq)
         )
           return;
         !o && e.startsWith("dm:") && (await this.ensureContact(s, "request"));
@@ -11765,6 +11855,7 @@ zoo`.split(`
           got: 0,
           ready: !1,
         };
+        jmArq && (c.name = jmFileName(n.fn)), !jmArq && n.vo === 1 && (c.vo = 1);
         n.dur && (c.dur = Math.min(3600, parseInt(n.dur, 10) || 0)),
           Array.isArray(n.wf) &&
             (c.wf = n.wf
@@ -11794,6 +11885,7 @@ zoo`.split(`
               from: s,
               kind: "media",
               media: c,
+              fwd: Wa(a, "fwd") ? !0 : void 0,
               ts: a.created_at * 1e3,
               exp: this.expOf(a),
               status: o ? "sent" : void 0,
@@ -11809,7 +11901,7 @@ zoo`.split(`
           !/^[0-9a-f]{32}$/.test(e.mid) ||
           !Number.isInteger(e.i) ||
           e.i < 0 ||
-          e.i > 200 ||
+          e.i >= Math.ceil(JM_FILE_MAX / Xs) ||
           typeof e.d != "string" ||
           e.d.length > 3e4
         )
@@ -12463,6 +12555,9 @@ zoo`.split(`
         return !Ie || me("foreground") !== !1;
       },
       /** Grava um arquivo (base64) na pasta Download; devolve onde ficou, "" se falhou, undefined no navegador. */
+      linkPreview(t, e) {
+        me("linkPreview", t, e);
+      },
       screenStart() {
         me("screenStart");
       },
@@ -16776,6 +16871,8 @@ zoo`.split(`
       return `<div class="invite"><div class="ih">${Pe({ meta: a.meta, pic: a.pic }, 44)}<div><b>${M(a.meta.name)}</b><small>Convite para grupo \xB7 ${o} ${o === 1 ? "membro" : "membros"}</small></div></div>
       ${n ? "" : s ? `<button class="btn ghost" data-act="openGroupLid" data-lid="${a.lid}">Abrir grupo</button>` : `<button class="btn" data-act="acceptInvite" data-id="${t.id}">Entrar no grupo</button>`}</div>`;
     }
+    if (t.kind === "media" && t.media.vo) return jmVoHtml(t);
+    if (t.kind === "media" && t.media.type === "file") return jmFileHtml(t);
     if (t.kind === "media") {
       let a = t.media,
         n = t.from === e.pk,
@@ -16802,7 +16899,7 @@ zoo`.split(`
           : `Recebendo ${a.got || 0}/${a.n}`;
       return `<span class="photo" style="${c}"><span class="ph" style="${a.th ? `background-image:url(${a.th})` : ""}"></span><span class="dl"><span>${a.err ? x("alert", "xs") : '<span class="spin"></span>'}${M(l)}</span></span></span>`;
     }
-    return jmMentionHtml(Od(t.text || ""), C && C.chat);
+    return jmMentionHtml(Od(t.text || ""), C && C.chat) + (t.lp ? jmLpHtml(t.lp) : "");
   }
   function Bu(t, e, a, n = {}) {
     let s = h.engine;
@@ -16841,10 +16938,10 @@ zoo`.split(`
       let rc = q && jmRolesOf(q, t.from)[0];
       f = `<div class="mname ${K ? "role" : ""}" ${rc ? `style="color:${JM_ROLE_CORES[rc.c]}"` : ""}>${M(ne(t.from))}${K ? `<span class="rolepill">${K}</span>` : ""}</div>`;
     }
-    let p = "";
+    let p = t.fwd ? `<div class="fwdtag">${x("share", "xs")} Encaminhada</div>` : "";
     if (t.reply) {
       let q = a.find((K) => K.id === t.reply);
-      p = `<div class="quote" data-act="jumpTo" data-id="${t.reply}"><b>${q ? M(q.from === s.pk ? "Voc\xEA" : ne(q.from)) : "Mensagem"}</b>${q ? M(s.preview(q)).slice(0, 140) : "Mensagem anterior"}</div>`;
+      p += `<div class="quote" data-act="jumpTo" data-id="${t.reply}"><b>${q ? M(q.from === s.pk ? "Voc\xEA" : ne(q.from)) : "Mensagem"}</b>${q ? M(s.preview(q)).slice(0, 140) : "Mensagem anterior"}</div>`;
     }
     let v =
         t.reacts && Object.keys(t.reacts).length
@@ -16870,7 +16967,7 @@ zoo`.split(`
         k ? "emoji" : "",
         !i && d && t.kind === "text" && jmMentionsMe(t.text, C.chat) ? "mentioned" : "",
         t.kind === "poll" ? "pollm" : "",
-        t.kind === "media" && t.media.type === "image" ? "img" : "",
+        t.kind === "media" && t.media.type === "image" && !t.media.vo ? "img" : "",
       ].join(" "),
       N =
         d && !i
@@ -17041,7 +17138,9 @@ zoo`.split(`
     let n = h.engine.chats.get(C.key);
     n && (n.draft = "");
     try {
-      await h.engine.sendText(C.key, e, { reply: a && a.id });
+      let jmU = h.engine.settings.linkPreviews !== !1 && X.available && (e.match(/https?:\/\/[^\s<]+/) || [])[0],
+        jmLp = jmU ? await jmLinkPreview(jmU.replace(/[.,)\]!?;:'"]+$/, "")) : null;
+      await h.engine.sendText(C.key, e, { reply: a && a.id, lp: jmLp });
     } catch (s) {
       _(s.message || "N\xE3o foi poss\xEDvel enviar.");
     }
@@ -17337,6 +17436,124 @@ zoo`.split(`
       n = e.value.slice(0, a).replace(/@([^\s@]{0,20})$/, "@" + t.dataset.n + " ");
     (e.value = n + e.value.slice(a)), e.setSelectionRange(n.length, n.length), e.focus({ preventScroll: !0 }), vo(e), wo(), jmMentionSuggest(e);
   });
+  // ---- Arquivos, encaminhar, visualização única e prévia de links ----
+  var jmLpWait = new Map(),
+    jmLpSeq = 0;
+  /** Prévia feita pelo lado Android (o site só vê este aparelho). Até 7 s. */
+  function jmLinkPreview(t) {
+    return new Promise((e) => {
+      let a = "lp" + ++jmLpSeq;
+      jmLpWait.set(a, (n) => e(jmCleanLp(n))),
+        setTimeout(() => jmLpWait.has(a) && (jmLpWait.delete(a), e(null)), 7e3),
+        X.linkPreview(a, t);
+    });
+  }
+  function jmLpHtml(t) {
+    let e = (t.u.split("://")[1] || "").split("/")[0].replace(/^www\./, "");
+    return `<div class="lpcard" data-act="openUrl" data-u="${M(t.u)}">${t.i ? `<img src="${t.i}" alt="">` : ""}<div><small>${M(e)}</small><b>${M(t.t)}</b>${t.d ? `<span>${M(t.d)}</span>` : ""}</div></div>`;
+  }
+  var jmBytes = (t) => (t < 1024 ? t + " B" : t < 1048576 ? (t / 1024).toFixed(0) + " KB" : (t / 1048576).toFixed(1) + " MB");
+  function jmFileHtml(t) {
+    let e = t.media,
+      a = e.name || "arquivo",
+      n = ((a.match(/\.([a-z0-9]{1,5})$/i) || [])[1] || "ARQ").toUpperCase();
+    return `<div class="filetile"><span class="fext">${M(n)}</span><div class="fmeta"><b>${M(a)}</b><small>${jmBytes(e.size || 0)}${e.ready ? "" : ` \xB7 recebendo ${e.got || 0}/${e.n}`}</small></div>${e.ready ? `<button class="ibtn sm" data-act="fileSave" data-mid="${e.mid}" data-n="${M(a)}" aria-label="Salvar">${x("download", "sm")}</button>` : '<span class="spin"></span>'}</div>`;
+  }
+  function jmVoHtml(t) {
+    let e = t.media,
+      a = e.type === "audio",
+      n = t.from === h.engine.pk,
+      s = e.opened ? (a ? "\xC1udio ouvido" : "Foto aberta") : a ? "\xC1udio" : "Foto",
+      o = e.opened ? "Visualiza\xE7\xE3o \xFAnica" + (n ? " \xB7 j\xE1 foi aberta" : "") : n ? "Visualiza\xE7\xE3o \xFAnica \xB7 ainda n\xE3o aberta" : e.ready ? "Visualiza\xE7\xE3o \xFAnica \xB7 toque para abrir" : "Visualiza\xE7\xE3o \xFAnica \xB7 chegando\u2026",
+      r = !e.opened && !n && e.ready;
+    return `<div class="votile ${e.opened ? "done" : ""}" ${r ? `data-act="voOpen" data-id="${t.id}"` : ""}><span class="vo1">1</span><div><b>${s}</b><small>${o}</small></div></div>`;
+  }
+  b("voOpen", async (t) => {
+    let e = C && C.key;
+    if (!e) return;
+    let a = C.msgs.find((o) => o.id === t.dataset.id),
+      n;
+    try {
+      n = await h.engine.openViewOnce(e, t.dataset.id);
+    } catch (o) {
+      return _(o.message);
+    }
+    if (a && a.media.type === "audio") return nu("vo:" + t.dataset.id, await n.arrayBuffer()), _("Tocando \u2014 este \xE1udio n\xE3o fica salvo");
+    let s = URL.createObjectURL(n),
+      r = y("#viewer");
+    (r.innerHTML = `<div class="vtop"><button class="ibtn" data-act="closeViewer" aria-label="Fechar">${x("back")}</button><span style="color:#fff;font-weight:600">Visualiza\xE7\xE3o \xFAnica</span></div><img src="${s}" alt="Foto">`),
+      (r.hidden = !1),
+      X.setSecure(!0),
+      (jmVoUrl = s);
+  });
+  var jmVoUrl = null;
+  b("pickFile", () => {
+    F(),
+      Kn("*/*").then(async (t) => {
+        if (!t || !C) return;
+        if (t.size > JM_FILE_MAX) return _("Arquivo grande demais: o limite \xE9 5 MB.");
+        let e = C.key,
+          a = JM_FILE_MIME.test(t.type || "") ? t.type : "application/octet-stream";
+        _("Enviando " + t.name + "\u2026");
+        try {
+          await h.engine.sendMedia(e, new Uint8Array(await t.arrayBuffer()), { type: "file", mime: a, name: t.name });
+        } catch (n) {
+          _(n.message || "N\xE3o foi poss\xEDvel enviar o arquivo.");
+        }
+      });
+  });
+  b("pickPhotoOnce", () => {
+    F(),
+      Kn("image/*").then(async (t) => {
+        if (!t || !C) return;
+        let e = C.key;
+        try {
+          let a = await xu(t);
+          await h.engine.sendMedia(e, a.bytes, { type: "image", mime: a.mime, w: a.w, h: a.h, vo: !0 }), _("Foto de visualiza\xE7\xE3o \xFAnica enviada");
+        } catch (a) {
+          _(a.message || "N\xE3o foi poss\xEDvel enviar a foto.");
+        }
+      });
+  });
+  b("fileSave", async (t) => {
+    F();
+    let e = await h.engine.mediaBlob(t.dataset.mid);
+    if (!e) return _("O arquivo ainda n\xE3o chegou inteiro.");
+    let a = new Uint8Array(await e.arrayBuffer()),
+      n = X.saveFile(t.dataset.n, Fa.enc(a));
+    if (n === void 0) {
+      let s = document.createElement("a");
+      (s.href = URL.createObjectURL(e)), (s.download = t.dataset.n), s.click(), setTimeout(() => URL.revokeObjectURL(s.href), 5e3), _("Arquivo salvo");
+    } else _(n ? "Salvo em " + n : "N\xE3o foi poss\xEDvel salvar o arquivo.", 3500);
+  });
+  b("fwdOpen", (t) => {
+    F();
+    let e = t.dataset.id,
+      a = h.engine,
+      n = [...a.chats.values()]
+        .filter((s) => s.kind === "group" ? a.groups.has(s.lid) : (a.contacts.get(s.pk) || {}).status === "ok")
+        .sort((s, o) => (o.lastTs || 0) - (s.lastTs || 0))
+        .slice(0, 60);
+    setTimeout(
+      () =>
+        ee(`<h2 class="sh-title">Encaminhar para\u2026</h2><div class="mlist">${n
+          .map((s) => {
+            let o = s.kind === "group" ? (a.groups.get(s.lid).meta.channels.find((r) => r.id === s.ch) || {}).name : ne(s.pk),
+              r = s.kind === "group" ? a.groups.get(s.lid).meta.name : "";
+            return `<button class="mitem" data-act="fwdTo" data-id="${e}" data-k="${s.key}">${x(s.kind === "group" ? "hash" : "user")}<span>${M(o || "")}${r ? `<small>${M(r)}</small>` : ""}</span></button>`;
+          })
+          .join("") || '<p class="sh-sub">Nenhuma conversa.</p>'}</div>`),
+      200,
+    );
+  });
+  b("fwdTo", async (t) => {
+    F();
+    try {
+      await h.engine.forward(t.dataset.id, t.dataset.k), _("Encaminhada");
+    } catch (e) {
+      _(e.message || "N\xE3o foi poss\xEDvel encaminhar.");
+    }
+  });
   // Mais opções da mensagem
   function jmCanPin() {
     if (!C) return !1;
@@ -17355,6 +17572,8 @@ zoo`.split(`
     ${a ? `<button class="mitem" data-act="editStart" data-id="${t.id}">${x("edit")}Editar</button>` : ""}
     ${n ? `<button class="mitem" data-act="pinMsg" data-id="${t.id}" data-on="${s ? 0 : 1}">${x("pin")}${s ? "Desafixar" : "Fixar na conversa"}</button>` : ""}
     ${t.kind === "poll" ? `<button class="mitem" data-act="pollWho" data-id="${t.id}">${x("users")}Ver quem votou</button>` : ""}
+    ${t.kind === "text" || t.kind === "sound" || (t.kind === "media" && !t.media.vo && t.media.ready) ? `<button class="mitem" data-act="fwdOpen" data-id="${t.id}">${x("share")}Encaminhar</button>` : ""}
+    ${t.kind === "media" && t.media.type === "file" && t.media.ready ? `<button class="mitem" data-act="fileSave" data-mid="${t.media.mid}" data-n="${M(t.media.name || "arquivo")}">${x("download")}Salvar arquivo</button>` : ""}
     <button class="mitem danger" data-act="delMsgId" data-id="${t.id}">${x("trash")}Apagar</button></div>`);
   });
   b("delMsgId", (t) => {
@@ -17679,7 +17898,9 @@ zoo`.split(`
   <button class="atile hot" data-act="attachSound"><span class="ab">${x("wave")}</span>Som</button>
   <button class="atile" data-act="attachVoice"><span class="ab">${x("mic")}</span>\xC1udio</button>
   <button class="atile" data-act="gifSheet"><span class="ab">${x("gif")}</span>GIF</button>
-  <button class="atile" data-act="pollNew"><span class="ab">${x("checks")}</span>Enquete</button></div>
+  <button class="atile" data-act="pollNew"><span class="ab">${x("checks")}</span>Enquete</button>
+  <button class="atile" data-act="pickFile"><span class="ab">${x("file")}</span>Arquivo</button>
+  <button class="atile" data-act="pickPhotoOnce"><span class="ab">${x("eye")}</span>Foto \xFAnica</button></div>
   <p class="note" style="padding:14px 2px 0">Fotos s\xE3o reduzidas e os metadados (como localiza\xE7\xE3o) s\xE3o removidos antes de sair do aparelho.</p>`),
   );
   b("attachVoice", () => {
@@ -17737,6 +17958,7 @@ zoo`.split(`
       (a.hidden = !1);
   });
   b("closeViewer", () => {
+    jmVoUrl && (URL.revokeObjectURL(jmVoUrl), (jmVoUrl = null), X.setSecure(!!h.engine.settings.lockScreenshots));
     (y("#viewer").hidden = !0), (y("#viewer").innerHTML = "");
   });
   b("attachSound", () => P.soundSheet("chat"));
@@ -20139,6 +20361,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ${le({ i: "eyeoff", n: "Bloquear capturas de tela", s: "Esconde o conte\xFAdo nas capturas e na tela de apps recentes", act: "tgl", data: 'data-k="lockScreenshots"', sw: e.lockScreenshots })}
     <div class="label">Mensagens</div>
     ${le({ i: "checks", n: "Confirma\xE7\xE3o de leitura", s: "Se desligar, voc\xEA tamb\xE9m n\xE3o v\xEA quando leram", act: "tgl", data: 'data-k="readReceipts"', sw: e.readReceipts })}
+    ${le({ i: "share", n: "Pr\xE9via dos links que eu mando", s: "Seu celular abre o site para pegar t\xEDtulo e imagem; quem recebe n\xE3o acessa nada", act: "tgl", data: 'data-k="linkPreviews"', sw: e.linkPreviews !== !1 })}
     ${le({ i: "eye", n: "Mostrar quando estou online", s: "Se desligar, voc\xEA tamb\xE9m n\xE3o v\xEA quem est\xE1 online", act: "tgl", data: 'data-k="presence"', sw: e.presence !== !1 })}
     ${le({ i: "chat", n: "Mostrar quando estou digitando", act: "tgl", data: 'data-k="typing"', sw: e.typing })}
     ${le({ i: "timer", n: "Mensagens tempor\xE1rias para novas conversas", act: "ttlDefault", val: yt(e.ttlDefault) })}
@@ -21410,6 +21633,10 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     onCallAction: (t) => bf(t),
     onSpotify: (t) => jmSpotifyFrom(t),
     onScreen: (t) => (t ? jmScreenOn() : jmScreenOff()),
+    onLinkPreview: (t, e) => {
+      let a = jmLpWait.get(t);
+      a && (jmLpWait.delete(t), a(e));
+    },
     onUpdate: (t) => jmUpdFound(t),
     onUpdateProgress: (t) => jmUpdProgress(t),
     onUpdateError: (t) => jmUpdError(t),

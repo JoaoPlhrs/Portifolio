@@ -85,6 +85,40 @@ impl Delivery {
     }
 }
 
+/// Prévia de um link, feita por quem mandou (quem recebe não acessa o site).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LinkPreview {
+    /// O endereço.
+    pub u: String,
+    /// Título.
+    #[serde(default)]
+    pub t: String,
+    /// Descrição.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub d: String,
+    /// Miniatura (data URL pequena).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub i: Option<String>,
+}
+
+impl LinkPreview {
+    /// Apara o que veio de fora. `None` se não sobrar nada útil.
+    pub fn clean(&self) -> Option<LinkPreview> {
+        let u: String = self.u.trim().chars().take(600).collect();
+        if !(u.starts_with("https://") || u.starts_with("http://")) {
+            return None;
+        }
+        let t = corta(&self.t, 140);
+        if t.is_empty() {
+            return None;
+        }
+        let i = self.i.as_ref().filter(|x| {
+            x.len() <= 40_000 && ["data:image/webp;base64,", "data:image/jpeg;base64,", "data:image/png;base64,"].iter().any(|p| x.starts_with(p))
+        });
+        Some(LinkPreview { u, t, d: corta(&self.d, 240), i: i.cloned() })
+    }
+}
+
 /// Música tocando agora (por enquanto, só do Spotify).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Listening {
@@ -260,6 +294,9 @@ pub enum AppMessage {
     /// Online (`on`), ausente (`away`) ou escondido (`off`). Sempre efêmero.
     #[serde(rename = "pres")]
     Presence { s: String },
+    /// Quem recebeu abriu a mídia de visualização única (só em conversa a dois).
+    #[serde(rename = "voo")]
+    ViewOnceOpened { id: String },
     /// Para a própria conta: "sou um aparelho novo, me mande o que você tem".
     #[serde(rename = "sreq")]
     SyncReq { dev: String },
@@ -327,6 +364,12 @@ pub struct MediaHeader {
     /// Quando o áudio é um som do soundboard criado pela pessoa.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sb: Option<SoundMeta>,
+    /// Nome do arquivo (só para `type: "file"`).
+    #[serde(default, rename = "fn", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Visualização única: 1 = abre uma vez e some.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vo: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -334,6 +377,8 @@ pub struct MediaHeader {
 pub enum MediaKind {
     Audio,
     Image,
+    /// Documento qualquer (PDF, zip…), até 5 MB.
+    File,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -599,6 +644,8 @@ mod tests {
     #[test]
     fn cabecalho_de_midia_omite_o_que_nao_tem() {
         let h = MediaHeader {
+            name: None,
+            vo: None,
             mid: "m1".into(),
             kind: MediaKind::Image,
             mime: "image/webp".into(),

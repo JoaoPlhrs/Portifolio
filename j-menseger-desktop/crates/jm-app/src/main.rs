@@ -16,6 +16,7 @@ mod calls;
 mod canvas;
 mod canvas_setup;
 mod gifs;
+mod linkprev;
 mod icons;
 mod motion;
 mod nowplaying;

@@ -415,4 +415,10 @@ public class Bridge {
     public void screenStop() {
         ui(ScreenShare::stop);
     }
+
+    /** Prévia de link (este aparelho acessa o site). Resposta em JM.onLinkPreview. */
+    @JavascriptInterface
+    public void linkPreview(String id, String url) {
+        LinkPreview.fetch(id, url);
+    }
 }
