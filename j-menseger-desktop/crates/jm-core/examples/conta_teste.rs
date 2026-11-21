@@ -64,6 +64,32 @@ async fn main() {
             e.sync_push(true).await;
             tokio::time::sleep(Duration::from_secs(8)).await;
         }
+        "aparelho" => {
+            let store = Store::in_memory().unwrap();
+            let keys = Engine::restore_identity(&store, chave, "").unwrap();
+            let mut s = jm_core::engine::Settings::default();
+            s.relays = vec![a[3].clone()];
+            store.set_kv("settings", &s).unwrap();
+            let (e, mut rx) = Engine::open(keys, store).unwrap();
+            e.start().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            e.announce_device("PC de teste", "Windows").await;
+            println!("aparelho anunciado; esperando ordem de sair…");
+            let fim = tokio::time::Instant::now() + Duration::from_secs(a[4].parse().unwrap_or(40));
+            loop {
+                match tokio::time::timeout_at(fim, rx.recv()).await {
+                    Ok(Some(jm_core::engine::EngineEvent::RemoteLogout)) => {
+                        println!("RECEBIDO: ordem de sair (o app apagaria a conta aqui)");
+                        break;
+                    }
+                    Ok(Some(_)) => {}
+                    _ => {
+                        println!("tempo esgotado sem ordem de sair");
+                        break;
+                    }
+                }
+            }
+        }
         _ => eprintln!("modo desconhecido"),
     }
 }

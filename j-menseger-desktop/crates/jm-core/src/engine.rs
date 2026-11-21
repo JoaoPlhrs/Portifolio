@@ -79,6 +79,9 @@ pub struct Profile {
     pub banner: Option<String>,
     #[serde(default)]
     pub games: Vec<String>,
+    /// Status personalizado.
+    #[serde(default)]
+    pub status: Option<crate::messages::CustomStatus>,
 }
 
 /// Situação de um contato.
@@ -120,6 +123,9 @@ pub struct Contact {
     pub banner: Option<String>,
     #[serde(default)]
     pub games: Vec<String>,
+    /// Status personalizado que a pessoa mandou.
+    #[serde(default)]
+    pub cstatus: Option<crate::messages::CustomStatus>,
 }
 
 impl Contact {
@@ -337,6 +343,10 @@ pub enum EngineEvent {
     Presence { pk: String },
     /// Mudaram as mensagens fixadas de uma conversa.
     Pins { chat: String },
+    /// Mudou a lista de aparelhos da conta.
+    Devices,
+    /// Outro aparelho da conta mandou este sair: a conta foi apagada daqui.
+    RemoteLogout,
     /// Chegaram contatos ou grupos de outro aparelho da mesma conta.
     Synced { contacts: usize, groups: usize },
     /// Os ajustes mudaram.
@@ -1014,7 +1024,7 @@ impl Engine {
                 self.save_contact(&snap)?;
                 let _ = self.events.send(EngineEvent::ContactChanged { pk: peer.into() });
             }
-            AppMessage::Profile { n, s, c, p, r: relays, g } if !mine => {
+            AppMessage::Profile { n, s, c, p, r: relays, g, st: cst } if !mine => {
                 self.ensure_contact(peer, ContactStatus::Request)?;
                 let snapshot = {
                     let mut st = self.state.lock().unwrap();
@@ -1032,6 +1042,10 @@ impl Engine {
                     ct.relays = relays.iter().filter_map(|u| normalize_url(u)).take(5).collect();
                     if let Some(g) = &g {
                         ct.games = media::clean_games(g);
+                    }
+                    // Quem manda o perfil sem `st` (versão nova) tirou o status.
+                    if g.is_some() {
+                        ct.cstatus = cst.as_ref().and_then(|x| x.clean(now_ms()));
                     }
                     ct.clone()
                 };
@@ -1105,6 +1119,7 @@ impl Engine {
                     let s = match s.as_str() {
                         "away" => "away",
                         "off" => "off",
+                        "dnd" => "dnd",
                         _ => "on",
                     };
                     let responder = {
@@ -2474,6 +2489,7 @@ impl Engine {
         match s.as_str() {
             "on" => Some("on"),
             "away" => Some("away"),
+            "dnd" => Some("dnd"),
             _ => None,
         }
     }
@@ -2481,7 +2497,8 @@ impl Engine {
     /// Conta aos contatos aceitos se estou online ou ausente. Pode chamar
     /// sempre: só manda quando muda ou a cada [`PRESENCE_HEARTBEAT_MS`].
     pub async fn set_presence(self: &Arc<Self>, away: bool, force: bool) {
-        let s = if !self.settings().presence { "off" } else if away { "away" } else { "on" };
+        let dnd = self.me().status.as_ref().and_then(|x| x.clean(now_ms())).is_some_and(|x| x.dnd);
+        let s = if !self.settings().presence { "off" } else if dnd { "dnd" } else if away { "away" } else { "on" };
         let agora = now_ms();
         {
             let mut st = self.state.lock().unwrap();
@@ -2665,6 +2682,7 @@ impl Engine {
             p: Some(me.pic.clone().unwrap_or_default()),
             r: self.settings().relays.iter().take(5).cloned().collect(),
             g: Some(me.games.clone()),
+            st: me.status.as_ref().and_then(|x| x.clean(now_ms())),
         };
         let chat = ChatKey::Direct { peer: pk.to_string() }.as_string();
         self.send_app(&chat, &app, BuildOpts { no_self_copy: true, no_ttl: true, ..Default::default() }).await?;
@@ -2738,6 +2756,30 @@ impl Engine {
             }
         });
         Ok(())
+    }
+
+    /// Status personalizado (`None` tira). Vai para os contatos aceitos.
+    pub async fn set_my_status(self: &Arc<Self>, st: Option<crate::messages::CustomStatus>) -> Result<()> {
+        {
+            let mut me = self.me.write().unwrap();
+            me.status = st.and_then(|x| x.clean(now_ms()));
+            self.store.lock().unwrap().set_kv("me", &*me)?;
+        }
+        let _ = self.events.send(EngineEvent::ProfileChanged);
+        let contatos: Vec<String> = self.contacts().into_iter().filter(|c| c.status == ContactStatus::Ok).map(|c| c.pk).collect();
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            for pk in contatos {
+                let _ = me.send_profile(&pk).await;
+            }
+            me.set_presence(false, true).await;
+        });
+        Ok(())
+    }
+
+    /// Status de um contato, se ainda valer.
+    pub fn status_of(&self, pk: &str) -> Option<crate::messages::CustomStatus> {
+        self.contact(pk)?.cstatus?.clean(now_ms())
     }
 
     /// Banner e jogos favoritos. `banner` vazio tira o banner. Os contatos
@@ -3257,7 +3299,7 @@ impl Engine {
                 status_name(c.status), c.verified as i64,
                 serde_json::to_string(&c.relays).unwrap_or_else(|_| "[]".into()),
                 c.prof_sent as i64, c.added_at,
-                serde_json::json!({ "b": c.banner, "g": c.games }).to_string()
+                serde_json::json!({ "b": c.banner, "g": c.games, "st": c.cstatus }).to_string()
             ],
         ).map_err(crate::store::StoreError::from)?;
         Ok(())
@@ -4293,6 +4335,7 @@ fn save_chat(store: &Store, c: &ChatRow) -> Result<()> {
 fn new_contact(pk: &str, status: ContactStatus) -> Contact {
     let tone = u8::from_str_radix(pk.get(..2).unwrap_or("0"), 16).unwrap_or(0) % 6;
     Contact {
+        cstatus: None,
         pk: pk.to_string(),
         name: String::new(),
         nick: String::new(),
@@ -4317,6 +4360,7 @@ fn load_contacts(store: &Store) -> Result<HashMap<String, Contact>> {
     let rows: Vec<Contact> = stmt
         .query_map([], |r| {
             Ok(Contact {
+                cstatus: None,
                 pk: r.get(0)?,
                 name: r.get(1)?,
                 nick: r.get(2)?,
@@ -4335,6 +4379,7 @@ fn load_contacts(store: &Store) -> Result<HashMap<String, Contact>> {
                 let extra: serde_json::Value = r.get::<_, String>(11).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
                 c.banner = extra["b"].as_str().map(str::to_string);
                 c.games = extra["g"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                c.cstatus = serde_json::from_value(extra["st"].clone()).ok();
                 c
             })
         })

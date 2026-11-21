@@ -1589,6 +1589,57 @@ impl Main {
                 let (pk, c) = (pk.clone(), Arc::clone(&self.calls));
                 Task::perform(async move { c.set_peer_volume(&pk, nv).await }, |_| Msg::Noop)
             }
+            Msg::OpenSetStatus => {
+                self.close_overlays();
+                let s = self.me.status.clone().filter(|x| x.clean(jm_core::engine::now_ms()).is_some()).unwrap_or_default();
+                self.modal = Some(Modal::SetStatus { e: s.e, t: s.t, dnd: s.dnd, dur: 0 });
+                Task::none()
+            }
+            Msg::StatusField(k, v) => {
+                if let Some(Modal::SetStatus { e, t, .. }) = &mut self.modal {
+                    match k {
+                        0 => *e = v.chars().take(8).collect(),
+                        1 => *t = v.chars().take(80).collect(),
+                        _ => {
+                            // Sugestão pronta: "emoji|texto".
+                            if let Some((a, b)) = v.split_once('|') {
+                                *e = a.into();
+                                *t = b.into();
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Msg::StatusDnd(on) => {
+                if let Some(Modal::SetStatus { dnd, .. }) = &mut self.modal {
+                    *dnd = on;
+                }
+                Task::none()
+            }
+            Msg::StatusDur(d) => {
+                if let Some(Modal::SetStatus { dur, .. }) = &mut self.modal {
+                    *dur = d;
+                }
+                Task::none()
+            }
+            Msg::StatusSave(limpar) => {
+                let Some(Modal::SetStatus { e, t, dnd, dur }) = self.modal.take() else { return Task::none() };
+                let agora = jm_core::engine::now_ms();
+                let x = match dur {
+                    1 => agora + 3_600_000,
+                    2 => agora + 4 * 3_600_000,
+                    3 => chrono::Local::now().date_naive().and_hms_opt(23, 59, 59).and_then(|d| d.and_local_timezone(chrono::Local).single()).map(|d| d.timestamp_millis()).unwrap_or(0),
+                    _ => 0,
+                };
+                let st = (!limpar).then_some(jm_core::messages::CustomStatus { e, t, dnd, x });
+                let e = self.eng();
+                toast_done(async move { e.set_my_status(st).await.map(|_| "Status atualizado".to_string()).map_err(s) })
+            }
+            Msg::RemoveDevice(dev) => {
+                let e = self.eng();
+                toast_done(async move { e.remove_device(&dev).await.map(|_| "Pedido enviado: o aparelho sai assim que ficar on-line".to_string()).map_err(s) })
+            }
             Msg::MentionPick(nome) => {
                 let Some(c) = self.chat.as_mut() else { return Task::none() };
                 let t = c.editor.text();
@@ -3266,6 +3317,12 @@ impl Main {
                 crate::notif::message(format!("📅 {titulo}"), format!("Começa {quando}."), Some(chat), false);
             }
         }
+        if self.dev_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(6 * 3600)) {
+            self.dev_at = Some(Instant::now());
+            let e = self.eng();
+            let (nome, sistema) = crate::platform::device_name();
+            tarefas.push(Task::perform(async move { e.announce_device(&nome, &sistema).await }, |_| Msg::Noop));
+        }
         if self.sync_at.elapsed() >= Duration::from_secs(60) {
             self.sync_at = Instant::now();
             let e = self.eng();
@@ -3322,6 +3379,11 @@ impl Main {
                 Task::none()
             }
             EngineEvent::Presence { .. } => Task::none(),
+            EngineEvent::Devices => Task::none(),
+            EngineEvent::RemoteLogout => {
+                self.toast("Outro aparelho desta conta desconectou este computador.");
+                self.wipe()
+            }
             EngineEvent::Synced { contacts, groups } => {
                 self.toast(format!("Seu outro aparelho mandou {contacts} contatos e {groups} grupos"));
                 self.reload_contacts();
@@ -3474,6 +3536,10 @@ impl Main {
             return;
         }
         if silenciada || m.body.is_system() {
+            return;
+        }
+        // Não perturbe: nada de som nem aviso (as mensagens chegam normalmente).
+        if self.me.status.as_ref().and_then(|x| x.clean(jm_core::engine::now_ms())).is_some_and(|x| x.dnd) {
             return;
         }
         if self.settings.sounds {

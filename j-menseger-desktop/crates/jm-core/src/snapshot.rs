@@ -360,6 +360,7 @@ impl Engine {
             let status = c["status"].as_str().and_then(status_from).unwrap_or(ContactStatus::Request);
             let existe = self.contact(pk);
             let mut ct = existe.clone().unwrap_or(Contact {
+                cstatus: None,
                 pk: pk.into(),
                 name: String::new(),
                 nick: String::new(),
@@ -554,6 +555,32 @@ impl Engine {
     pub(super) fn on_self_app(self: &Arc<Self>, app: AppMessage) {
         let meu = self.device_id();
         match app {
+            AppMessage::Device { dev, n, p } if dev != meu && dev.len() <= 32 => {
+                {
+                    let store = self.store.lock().unwrap();
+                    let mut lista: std::collections::BTreeMap<String, Value> = store.get_kv("devices").ok().flatten().unwrap_or_default();
+                    let tirados: Vec<String> = store.get_kv("devices_off").ok().flatten().unwrap_or_default();
+                    if tirados.contains(&dev) {
+                        return;
+                    }
+                    lista.insert(dev, json!({ "n": clamp(&n, 40), "p": clamp(&p, 20), "last": now_ms() }));
+                    let _ = store.set_kv("devices", &lista);
+                }
+                let _ = self.events.send(EngineEvent::Devices);
+            }
+            AppMessage::DeviceOff { dev } => {
+                if dev == meu {
+                    // Outro aparelho da conta mandou este sair.
+                    let _ = self.events.send(EngineEvent::RemoteLogout);
+                } else {
+                    let store = self.store.lock().unwrap();
+                    let mut lista: std::collections::BTreeMap<String, Value> = store.get_kv("devices").ok().flatten().unwrap_or_default();
+                    lista.remove(&dev);
+                    let _ = store.set_kv("devices", &lista);
+                    drop(store);
+                    let _ = self.events.send(EngineEvent::Devices);
+                }
+            }
             AppMessage::SyncReq { dev } if dev != meu => {
                 let me = Arc::clone(self);
                 tokio::spawn(async move { me.sync_push(true).await });
@@ -580,6 +607,47 @@ impl Engine {
         let chat = ChatKey::Direct { peer: self.pk_hex() }.as_string();
         let o = BuildOpts { no_ttl: true, no_self_copy: true, expires_in: Some(2 * DAY), ..Default::default() };
         self.send_app(&chat, app, o).await.map(|_| ())
+    }
+
+    /// Conta aos outros aparelhos que este existe (nome e sistema). Repetir de
+    /// tempos em tempos mantém o "visto por último" em dia.
+    pub async fn announce_device(self: &Arc<Self>, nome: &str, sistema: &str) {
+        let app = AppMessage::Device { dev: self.device_id(), n: clamp(nome, 40), p: clamp(sistema, 20) };
+        let chat = ChatKey::Direct { peer: self.pk_hex() }.as_string();
+        // Dura 7 dias no servidor: um aparelho que volta depois de uma semana ainda se vê na lista.
+        let o = BuildOpts { no_ttl: true, no_self_copy: true, expires_in: Some(7 * DAY), ..Default::default() };
+        let _ = self.send_app(&chat, &app, o).await;
+    }
+
+    /// Outros aparelhos da conta: (id, nome, sistema, visto por último em ms).
+    pub fn devices(&self) -> Vec<(String, String, String, i64)> {
+        let lista: std::collections::BTreeMap<String, Value> = self.store.lock().unwrap().get_kv("devices").ok().flatten().unwrap_or_default();
+        let mut v: Vec<_> = lista
+            .into_iter()
+            .map(|(id, x)| (id, x["n"].as_str().unwrap_or("Aparelho").to_string(), x["p"].as_str().unwrap_or("").to_string(), x["last"].as_i64().unwrap_or(0)))
+            .collect();
+        v.sort_by_key(|x| std::cmp::Reverse(x.3));
+        v
+    }
+
+    /// Manda um aparelho da conta sair (ele apaga a conta de lá ao receber).
+    pub async fn remove_device(self: &Arc<Self>, dev: &str) -> Result<()> {
+        {
+            let store = self.store.lock().unwrap();
+            let mut lista: std::collections::BTreeMap<String, Value> = store.get_kv("devices").ok().flatten().unwrap_or_default();
+            lista.remove(dev);
+            store.set_kv("devices", &lista)?;
+            let mut tirados: Vec<String> = store.get_kv("devices_off").ok().flatten().unwrap_or_default();
+            if !tirados.iter().any(|x| x == dev) {
+                tirados.push(dev.to_string());
+            }
+            store.set_kv("devices_off", &tirados)?;
+        }
+        let chat = ChatKey::Direct { peer: self.pk_hex() }.as_string();
+        let o = BuildOpts { no_ttl: true, no_self_copy: true, expires_in: Some(30 * DAY), ..Default::default() };
+        self.send_app(&chat, &AppMessage::DeviceOff { dev: dev.into() }, o).await?;
+        let _ = self.events.send(EngineEvent::Devices);
+        Ok(())
     }
 
     /// Pede aos outros aparelhos da conta o que eles têm (uma vez por instalação).

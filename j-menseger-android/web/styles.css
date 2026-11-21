@@ -4445,11 +4445,11 @@ textarea.inp {
 }
 .mentsug button > .i { margin-left: 4px; }
 .srchres { margin-top: 10px; max-height: 52vh; overflow-y: auto; }
-.srow { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 10px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
-.srow b { display: block; font-size: 13px; margin-bottom: 2px; }
-.srow b small { font-weight: 400; color: var(--fg2); }
-.srow span { font-size: 14px; color: var(--fg2); }
-.srow mark { background: var(--accent-soft); color: var(--accent-t); border-radius: 3px; padding: 0 1px; }
+.srchrow { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 10px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.srchrow b { display: block; font-size: 13px; margin-bottom: 2px; }
+.srchrow b small { font-weight: 400; color: var(--fg2); }
+.srchrow span { font-size: 14px; color: var(--fg2); }
+.srchrow mark { background: var(--accent-soft); color: var(--accent-t); border-radius: 3px; padding: 0 1px; }
 .pres { display: inline-flex; align-items: center; gap: 5px; }
 .pres i { width: 8px; height: 8px; border-radius: 50%; background: #2fd47c; }
 .pres.away i { background: #fdd835; }
@@ -4520,3 +4520,9 @@ textarea.inp {
 .volrow input { flex: 1; accent-color: var(--accent); }
 .volrow b { width: 44px; text-align: right; }
 .ptile[data-act="peerVol"] { cursor: pointer; }
+
+.pres.dnd i { background: #ef5350; }
+.pres.off i { background: #777; }
+.stsug, .stdur { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+.stsug button, .stdur button { border: 1px solid var(--line); background: var(--s2); color: var(--fg); font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 99px; cursor: pointer; }
+.stdur button.on { background: var(--accent); border-color: var(--accent); color: #041; }

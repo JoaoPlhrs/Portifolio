@@ -43,6 +43,7 @@ pub enum SettingsPage {
     About,
     Audio,
     Gifs,
+    Devices,
 }
 
 /// GIF aberto em quadros, pronto para animar na tela.
@@ -410,6 +411,7 @@ pub enum Modal {
     Search { all: Vec<CoreMessage>, query: String },
     Forward { id: String, query: String },
     PeerVolume { pk: String, v: f32 },
+    SetStatus { e: String, t: String, dnd: bool, dur: u8 },
     NewEvent { title: String, date: String, time: String, desc: String },
     ViewOnce { handle: image::Handle },
     Pins { list: Vec<CoreMessage> },
@@ -546,6 +548,8 @@ pub struct Main {
     pub autostart: bool,
     /// Última conferência da sincronia com os outros aparelhos da conta.
     pub sync_at: Instant,
+    /// Último aviso "este aparelho existe" para os outros aparelhos da conta.
+    pub dev_at: Option<Instant>,
     /// Última conferência dos lembretes de eventos.
     pub evt_at: Instant,
     /// Mensagem destacada depois de pular até ela.
@@ -672,6 +676,7 @@ impl Main {
             autostart: crate::tray::autostart(),
             sync_at: Instant::now() - Duration::from_secs(50),
             evt_at: Instant::now(),
+            dev_at: None,
             flash: None,
             share_audio: engine.ui_pref::<bool>("share_audio").unwrap_or(true),
             share_quality: Quality::P1080,

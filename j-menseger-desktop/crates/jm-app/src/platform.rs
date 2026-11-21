@@ -235,6 +235,24 @@ pub async fn save_file(bytes: Vec<u8>, nome: String) -> Result<String, String> {
     Ok("Arquivo salvo".into())
 }
 
+/// Nome deste computador e o sistema, para a lista de aparelhos da conta.
+pub fn device_name() -> (String, String) {
+    let nome = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Computador".into());
+    let sistema = if cfg!(windows) {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    (nome, sistema.into())
+}
+
 /// Grava o arquivo de backup onde a pessoa escolher.
 pub async fn save_backup(bytes: Vec<u8>) -> Result<String, String> {
     let nome = format!("J-Menseger backup {}.jmbackup", chrono::Local::now().format("%Y-%m-%d"));

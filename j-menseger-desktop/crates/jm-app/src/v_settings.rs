@@ -26,6 +26,7 @@ pub fn sidebar(m: &Main) -> El<'_> {
         item(SettingsPage::Profile, Icon::User, "Perfil", false),
         item(SettingsPage::MyCode, Icon::Qr, "Meu código", false),
         item(SettingsPage::Recovery, Icon::Key, "Chave de recuperação", m.words_pending),
+        item(SettingsPage::Devices, Icon::Screen, "Aparelhos conectados", false),
         rotulo("Privacidade e avisos"),
         item(SettingsPage::Privacy, Icon::Shield, "Privacidade e segurança", false),
         item(SettingsPage::Notifications, Icon::Bell, "Notificações", false),
@@ -86,7 +87,39 @@ pub fn page(m: &Main) -> El<'_> {
         SettingsPage::About => about(m),
         SettingsPage::Audio => audio(m),
         SettingsPage::Gifs => gifs(m),
+        SettingsPage::Devices => devices(m),
     }
+}
+
+/* ------------------------------------------------------------ aparelhos */
+
+fn devices(m: &Main) -> El<'_> {
+    let (nome, sistema) = crate::platform::device_name();
+    let mut linhas: Vec<El<'_>> = vec![ui::setting(Some(Icon::Screen), &format!("{nome} (este computador)"), Some(sistema), Trail::None, None, false)];
+    let agora = jm_core::engine::now_ms();
+    for (id, n, p, last) in m.engine.devices() {
+        let dias = (agora - last) / 86_400_000;
+        let visto = if agora - last < 7 * 3_600_000 { "Ativo recentemente".to_string() } else if dias < 1 { "Visto hoje".into() } else { format!("Visto há {dias} dias") };
+        let icone = if p == "Android" || p == "iOS" { Icon::Phone } else { Icon::Screen };
+        linhas.push(ui::setting(
+            Some(icone),
+            &n,
+            Some(format!("{p} · {visto}")),
+            Trail::Custom(ui::danger_text(None, "Desconectar", Some(Msg::RemoveDevice(id.clone()))).into()),
+            None,
+            false,
+        ));
+    }
+    frame(
+        "Aparelhos conectados",
+        Some("Onde esta conta está aberta (os aparelhos se avisam pela própria conta, cifrado)."),
+        vec![
+            ui::vspace(8.0),
+            ui::group(linhas),
+            ui::vspace(6.0),
+            ui::note("Desconectar manda o aparelho sair e apagar a conta dele assim que ficar on-line. Se alguém roubou suas 12 palavras, isso não basta: crie uma conta nova e avise seus contatos."),
+        ],
+    )
 }
 
 /* ------------------------------------------------------------ perfil */

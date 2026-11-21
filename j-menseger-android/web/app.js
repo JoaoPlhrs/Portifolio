@@ -9951,6 +9951,16 @@ zoo`.split(`
       return;
     }
   }
+  function jmCleanStatus(t) {
+    if (!t || typeof t != "object") return null;
+    let e = String(t.e || "").replace(/[\u0000-\u001f]/g, "").slice(0, 8),
+      a = ie(t.t, 80),
+      n = !!t.dnd,
+      s = Number(t.x) > 0 ? Number(t.x) : 0;
+    if ((!e && !a && !n) || (s && s <= Date.now())) return null;
+    let o = {};
+    return e && (o.e = e), a && (o.t = a), n && (o.dnd = !0), s && (o.x = s), o;
+  }
   var JM_PRES_HEARTBEAT = 24e4, JM_PRES_TTL = 54e4;
   /** Cargos do grupo: nome e cor, e quem tem cada um. Igual ao PC. */
   var JM_PERMS = [["pin", "Fixar mensagens"], ["del", "Apagar mensagens de outros"], ["todos", "Mencionar @todos"]];
@@ -10452,6 +10462,7 @@ zoo`.split(`
                 Array.isArray(c.r) &&
                   (l.relays = c.r.map(ha).filter(Boolean).slice(0, 5)),
                   Array.isArray(c.g) && (l.games = jmCleanGames(c.g)),
+                  Array.isArray(c.g) && ((l.st = jmCleanStatus(c.st) || void 0), l.st || delete l.st),
                   await this.db.put("contacts", l),
                   this.emit("contact", l),
                   this.emit("chats");
@@ -10529,7 +10540,7 @@ zoo`.split(`
                   this.myPres.s !== "off" &&
                   this.sendApp(i, { t: "pres", s: this.myPres.s }, { ephemeral: !0, selfCopy: !1, noTtl: !0 }).catch(() => {});
               }
-              this.presence.set(o, { s: c.s === "away" ? "away" : c.s === "off" ? "off" : "on", at: Date.now() }),
+              this.presence.set(o, { s: c.s === "away" ? "away" : c.s === "off" ? "off" : c.s === "dnd" ? "dnd" : "on", at: Date.now() }),
                 this.emit("presence", o),
                 this.emit("contact", r);
               return;
@@ -11223,7 +11234,8 @@ zoo`.split(`
         return !a || Date.now() - a.at > JM_PRES_TTL || a.s === "off" ? null : a.s;
       }
       async setPresence(e, a = !1) {
-        let n = this.settings.presence ? e : "off",
+        let jmD = jmCleanStatus(this.me && this.me.st),
+          n = this.settings.presence ? (jmD && jmD.dnd ? "dnd" : e) : "off",
           s = Date.now();
         if (!a && this.myPres && this.myPres.s === n && s - this.myPres.at < JM_PRES_HEARTBEAT) return;
         if (n === "off" && (!this.myPres || this.myPres.s === "off") && !a) return;
@@ -11467,10 +11479,50 @@ zoo`.split(`
         let a = await this.deviceId();
         if (e.dev === a) return;
         if (e.t === "sreq") return void this.syncPush(!0).catch(() => {});
+        if (e.t === "dev" && typeof e.dev == "string" && e.dev.length <= 32) {
+          if ((await this.kv("devicesOff", [])).includes(e.dev)) return;
+          let n = await this.kv("devices", {});
+          return (n[e.dev] = { n: ie(e.n, 40) || "Aparelho", p: ie(e.p, 20), last: Date.now() }), await this.setKv("devices", n), void this.emit("devices");
+        }
+        if (e.t === "devoff" && typeof e.dev == "string") {
+          if (e.dev === a) return void this.emit("remoteLogout");
+          let n = await this.kv("devices", {});
+          return delete n[e.dev], await this.setKv("devices", n), void this.emit("devices");
+        }
         if (e.t === "sync" && e.d) {
           let n = await this.mergeSnapshot(e.d, !1);
           n.contacts + n.groups > 0 && this.emit("synced", n);
         }
+      }
+      async announceDevice() {
+        let e = (navigator.userAgent.match(/Android[^;]*;\s*([^;)]+?)(?:\s+Build|\))/) || [])[1] || "Celular";
+        await this.sendSelf({ t: "dev", dev: await this.deviceId(), n: ie(e, 40), p: "Android" });
+      }
+      async devices() {
+        let e = await this.kv("devices", {});
+        return Object.entries(e)
+          .map(([a, n]) => ({ id: a, ...n }))
+          .sort((a, n) => (n.last || 0) - (a.last || 0));
+      }
+      async removeDevice(e) {
+        let a = await this.kv("devices", {});
+        delete a[e], await this.setKv("devices", a);
+        let n = await this.kv("devicesOff", []);
+        n.includes(e) || n.push(e), await this.setKv("devicesOff", n);
+        let s = Sd(this.sk, jt, JSON.stringify({ t: "devoff", dev: e }), [["p", this.pk]]);
+        await this.pool.publish(oi(s, this.sk, this.pk, { expiration: be() + 30 * Za }), []), this.emit("devices");
+      }
+      async setMyStatus(e) {
+        (this.me.st = jmCleanStatus(e) || void 0), this.me.st || delete this.me.st, await this.setKv("me", this.me);
+        for (let a of [...this.contacts.values()].filter((n) => n.status === "ok"))
+          try {
+            await this.sendProfile(a.pk);
+          } catch {}
+        this.setPresence("on", !0).catch(() => {});
+      }
+      statusOf(e) {
+        let a = this.contacts.get(e);
+        return a ? jmCleanStatus(a.st) : null;
       }
       /** Pede aos outros aparelhos da conta o que eles têm (uma vez por instalação). */
       async syncRequest() {
@@ -11582,6 +11634,7 @@ zoo`.split(`
             p: this.me.pic || "",
             r: this.settings.relays.slice(0, 5),
             g: this.me.games || [],
+            ...(jmCleanStatus(this.me.st) ? { st: jmCleanStatus(this.me.st) } : {}),
           },
           { selfCopy: !1, noTtl: !0 },
         );
@@ -16796,7 +16849,11 @@ zoo`.split(`
         return {
           html: `<span class="lstat">${x("music", "xs")} Ouvindo ${M(lis.s)}${lis.a ? " \u2014 " + M(lis.a) : ""}</span>`,
         };
-      let jmPr = t.presenceOf && t.presenceOf(e.pk);
+      let jmPr = t.presenceOf && t.presenceOf(e.pk),
+        jmSt = t.statusOf && t.statusOf(e.pk);
+      if (jmSt)
+        return { html: `<span class="pres ${jmSt.dnd ? "dnd" : jmPr || "off"}"><i></i>${M(((jmSt.e || "") + " " + (jmSt.t || (jmSt.dnd ? "N\xE3o perturbe" : ""))).trim())}</span>` };
+      if (jmPr === "dnd") return { html: '<span class="pres dnd"><i></i>n\xE3o perturbe</span>' };
       if (jmPr)
         return { live: jmPr === "on", html: `<span class="pres ${jmPr}"><i></i>${jmPr === "on" ? "online" : "ausente"}</span>` };
       return o && o.status === "request"
@@ -17499,6 +17556,53 @@ zoo`.split(`
       n = e.value.slice(0, a).replace(/@([^\s@]{0,20})$/, "@" + t.dataset.n + " ");
     (e.value = n + e.value.slice(a)), e.setSelectionRange(n.length, n.length), e.focus({ preventScroll: !0 }), vo(e), wo(), jmMentionSuggest(e);
   });
+  // ---- Status personalizado e aparelhos conectados ----
+  var jmStDur = 0;
+  b("statusOpen", () => {
+    let t = jmCleanStatus(h.engine.me.st) || {};
+    (jmStDur = 0),
+      ee(`<h2 class="sh-title">Definir status</h2><p class="sh-sub">Aparece para os seus contatos, junto com a m\xFAsica do Spotify.</p>
+    <div style="display:flex;gap:8px"><input class="inp" id="ste" maxlength="8" placeholder="\u{1F3AE}" value="${M(t.e || "")}" style="width:64px;text-align:center"><input class="inp" id="stt" maxlength="80" placeholder="Ex.: Jogando Valorant" value="${M(t.t || "")}" autocomplete="off"></div>
+    <div class="stsug">${[["\u{1F3AE}", "Jogando"], ["\u{1F4DA}", "Estudando"], ["\u{1F4BC}", "Trabalhando"], ["\u{1F319}", "Dormindo"]].map(([e, a]) => `<button data-act="stSug" data-e="${e}" data-t="${a}">${e} ${a}</button>`).join("")}</div>
+    <label class="pick" style="padding:10px 2px"><span style="flex:1">N\xE3o perturbe<small style="display:block;opacity:.65">Sem som nem aviso de mensagem</small></span><input type="checkbox" id="stdnd" ${t.dnd ? "checked" : ""}></label>
+    <span class="lbl">Limpar depois de</span><div class="stdur">${["N\xE3o limpar", "1 hora", "4 horas", "Hoje"].map((e, a) => `<button class="${a === 0 ? "on" : ""}" data-act="stDur" data-d="${a}">${e}</button>`).join("")}</div>
+    <div class="two" style="margin-top:12px"><button class="btn ghost" data-act="stClear" style="margin:0">Tirar status</button><button class="btn" data-act="stSave" style="margin:0">Salvar</button></div>`);
+  });
+  b("stSug", (t) => {
+    (y("#ste").value = t.dataset.e), (y("#stt").value = t.dataset.t);
+  });
+  b("stDur", (t) => {
+    (jmStDur = +t.dataset.d), oe(".stdur button").forEach((e) => e.classList.toggle("on", e === t));
+  });
+  b("stSave", async () => {
+    let t = Date.now(),
+      e = new Date();
+    e.setHours(23, 59, 59, 0);
+    let a = [0, t + 36e5, t + 144e5, e.getTime()][jmStDur] || 0,
+      n = { e: y("#ste").value.trim(), t: y("#stt").value.trim(), dnd: y("#stdnd").checked, x: a };
+    F(), await h.engine.setMyStatus(n), _("Status atualizado"), P.refreshSettings && P.refreshSettings();
+  });
+  b("stClear", async () => {
+    F(), await h.engine.setMyStatus(null), _("Status removido");
+  });
+  b("devicesOpen", async () => {
+    let t = await h.engine.devices(),
+      e = Date.now(),
+      a = (n) => (e - n < 252e5 ? "Ativo recentemente" : e - n < 864e5 ? "Visto hoje" : `Visto h\xE1 ${Math.floor((e - n) / 864e5)} dias`);
+    J.open(
+      "devices",
+      `<div class="sc-top"><div class="subhead"><button class="ibtn" data-act="back" aria-label="Voltar">${x("back")}</button><h2>Aparelhos conectados</h2></div>
+    <div class="scroll"><div class="label">Este aparelho</div>
+      ${le({ i: "phone", n: "Este celular", s: "Android", act: "noop" })}
+      <div class="label">Outros aparelhos</div>
+      ${t.length ? t.map((n) => le({ i: n.p === "Android" || n.p === "iOS" ? "phone" : "server", n: M(n.n), s: `${M(n.p)} \xB7 ${a(n.last || 0)}`, act: "devOff", data: `data-id="${M(n.id)}" data-n="${M(n.n)}"` })).join("") : '<p class="note">Nenhum outro aparelho visto ainda. Eles aparecem aqui quando abrem o app.</p>'}
+      <p class="note">Toque num aparelho para desconectar: ele sai e apaga a conta assim que ficar on-line. Se algu\xE9m roubou suas 12 palavras, isso n\xE3o basta \u2014 crie uma conta nova e avise seus contatos.</p></div></div>`,
+    );
+  });
+  b("devOff", async (t) => {
+    (await ge({ title: "Desconectar " + t.dataset.n + "?", text: "O aparelho sai e apaga a conta dele assim que ficar on-line.", ok: "Desconectar", danger: !0 })) &&
+      (await h.engine.removeDevice(t.dataset.id), J.pop(), _("Pedido enviado"));
+  });
   // ---- Volume de cada pessoa (só o que você ouve; fica guardado) ----
   var jmVols = {};
   function jmVolOf(t) {
@@ -17851,7 +17955,7 @@ zoo`.split(`
               r = jmNorm(o).indexOf(e),
               i = Math.max(0, r - 30),
               c = (i ? "…" : "") + o.slice(i, r) + "\u0001" + o.slice(r, r + e.length) + "\u0002" + o.slice(r + e.length, r + e.length + 80);
-            return `<button class="srow" data-act="pinGo" data-id="${s.id}"><b>${M(s.from === h.engine.pk ? "Voc\xEA" : ne(s.from))} <small>${M(_d(s.ts))} ${so(s.ts)}</small></b><span>${M(c).replace("\u0001", "<mark>").replace("\u0002", "</mark>")}</span></button>`;
+            return `<button class="srchrow" data-act="pinGo" data-id="${s.id}"><b>${M(s.from === h.engine.pk ? "Voc\xEA" : ne(s.from))} <small>${M(_d(s.ts))} ${so(s.ts)}</small></b><span>${M(c).replace("\u0001", "<mark>").replace("\u0002", "</mark>")}</span></button>`;
           })
           .join("")
       : '<p class="sh-sub">Nada encontrado.</p>';
@@ -20294,7 +20398,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ${e ? `<button class="reqhead" data-act="openRecovery" style="margin-top:12px">${x("key")}<b>Anote sua chave de recupera\xE7\xE3o</b>${x("chev", "sm")}</button>` : ""}
     <div class="label">Conta</div>
     ${le({ i: "qr", n: "Meu c\xF3digo", s: "QR e c\xF3digo para algu\xE9m te adicionar", act: "myCode" })}
+    ${le({ i: "smile", n: "Status", s: (() => { let jmS = jmCleanStatus(h.engine.me.st); return jmS ? M(((jmS.e || "") + " " + (jmS.t || "")).trim() || "") + (jmS.dnd ? " \xB7 N\xE3o perturbe" : "") : "Mostre o que voc\xEA est\xE1 fazendo"; })(), act: "statusOpen" })}
     ${le({ i: "key", n: "Chave de recupera\xE7\xE3o", s: "As 12 palavras que recuperam sua conta", act: "openRecovery" })}
+    ${le({ i: "link", n: "Aparelhos conectados", s: "Onde esta conta est\xE1 aberta", act: "devicesOpen" })}
     <div class="label">Privacidade e avisos</div>
     ${le({ i: "shield", n: "Privacidade e seguran\xE7a", s: "PIN, capturas de tela, recibos, bloqueados", act: "openPrivacy" })}
     ${le({ i: "bell", n: "Notifica\xE7\xF5es", s: t.settings.notifications ? "Ativadas" + (t.settings.background ? " \xB7 conectado em segundo plano" : "") : "Desativadas", act: "openNotifs" })}
@@ -21599,6 +21705,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       return;
     }
     if (!s.notifications) return;
+    let jmMeuSt = jmCleanStatus(n.me && n.me.st);
+    if (jmMeuSt && jmMeuSt.dnd) return;
     let u = s.notifPreview;
     X.notify({
       tag: t,
@@ -21658,6 +21766,14 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       }),
       t.on("synced", (e) => {
         _(`Seu outro aparelho mandou ${e.contacts} contatos e ${e.groups} grupos`, 3500), Ae(), Be();
+      }),
+      t.on("remoteLogout", async () => {
+        P.busyCall && P.busyCall() && P.leaveRoom && P.leaveRoom(), X.setBackground(!1), await h.engine.wipe();
+        try {
+          let a = localStorage.getItem("jm.theme");
+          localStorage.clear(), a && localStorage.setItem("jm.theme", a);
+        } catch {}
+        location.reload();
       }),
       t.on("pins", (e) => {
         C && C.key === e && jmPinBar();
@@ -21738,6 +21854,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       X.available && (setTimeout(() => X.updateCheck(), 8e3), setInterval(() => X.updateCheck(), 216e5)),
       setTimeout(() => jmPresTick(!0), 2500),
       jmVolLoad(),
+      setTimeout(() => e.announceDevice().catch(() => {}), 12e3),
+      setInterval(() => e.announceDevice().catch(() => {}), 216e5),
       setTimeout(() => e.syncRequest().then(() => e.syncPush(!1)).catch(() => {}), 1e4),
       setInterval(() => e.syncPush(!1).catch(() => {}), 6e4),
       setInterval(() => jmPresTick(), 6e4),

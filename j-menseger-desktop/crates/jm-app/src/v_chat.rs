@@ -95,6 +95,17 @@ fn header<'a>(m: &'a Main, c: &'a OpenChat) -> El<'a> {
                             .align_y(Alignment::Center)
                             .into()
                     }
+                    _ if m.engine.status_of(&peer).is_some_and(|s| !s.t.is_empty() || !s.e.is_empty() || s.dnd) => {
+                        let s = m.engine.status_of(&peer).unwrap_or_default();
+                        let txt = format!("{} {}", s.e, if s.t.is_empty() && s.dnd { "Não perturbe".to_string() } else { s.t.clone() }).trim().to_string();
+                        row![
+                            container(Space::new()).width(8).height(8).style(t::rounded(if s.dnd { t::DANGER } else if m.engine.presence_of(&peer).is_some() { t::accent() } else { t::FG_FAINT }, 4.0)),
+                            text(ui::ellipsis(&txt, 60)).size(12.5).color(t::FG_DIM)
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                        .into()
+                    }
                     _ if m.engine.presence_of(&peer).is_some() => {
                         let on = m.engine.presence_of(&peer) == Some("on");
                         row![

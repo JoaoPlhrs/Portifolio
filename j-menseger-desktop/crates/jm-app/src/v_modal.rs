@@ -169,6 +169,42 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         Modal::Crop(c) => crop(m, c),
         Modal::Search { all, query } => search(m, all, query),
         Modal::Forward { query, .. } => forward(m, query),
+        Modal::SetStatus { e, t: txt, dnd, dur } => {
+            let duracoes = row([(0u8, "Não limpar"), (1, "1 hora"), (2, "4 horas"), (3, "Hoje")]
+                .into_iter()
+                .map(|(k, n)| button(text(n).size(13)).padding([6, 10]).style(t::option(*dur == k)).on_press(Msg::StatusDur(k)).into())
+                .collect::<Vec<El<'a>>>())
+            .spacing(6);
+            let prontos = row([("🎮", "Jogando"), ("📚", "Estudando"), ("💼", "Trabalhando"), ("🌙", "Dormindo")]
+                .into_iter()
+                .map(|(em, tx)| button(text(format!("{em} {tx}")).size(13)).padding([6, 10]).style(t::option(false)).on_press(Msg::StatusField(2, format!("{em}|{tx}"))).into())
+                .collect::<Vec<El<'a>>>())
+            .spacing(6);
+            card(
+                460.0,
+                column![
+                    head("Definir status", Some("Aparece para os seus contatos, junto com a música do Spotify.")),
+                    row![
+                        iced::widget::text_input("🎮", e).on_input(|v| Msg::StatusField(0, v)).padding([10, 10]).size(16).width(56).style(t::input),
+                        iced::widget::text_input("Ex.: Jogando Valorant", txt).on_input(|v| Msg::StatusField(1, v)).on_submit(Msg::StatusSave(false)).padding([10, 12]).size(14.5).style(t::input),
+                    ]
+                    .spacing(8),
+                    prontos,
+                    row![
+                        column![text("Não perturbe").size(14).color(t::FG), text("Sem som nem aviso de mensagem. Os outros veem que você não quer ser incomodado.").size(12).color(t::FG_DIM)]
+                            .spacing(2)
+                            .width(Length::Fill),
+                        toggler(*dnd).on_toggle(Msg::StatusDnd).size(20)
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                    ui::field("Limpar depois de", duracoes),
+                    row![ui::ghost(None, "Tirar status", Some(Msg::StatusSave(true))), ui::fill(), ui::primary(Some(Icon::Check), "Salvar", Some(Msg::StatusSave(false)))].spacing(8),
+                ]
+                .spacing(12)
+                .into(),
+            )
+        }
         Modal::PeerVolume { pk, v } => card(
             380.0,
             column![

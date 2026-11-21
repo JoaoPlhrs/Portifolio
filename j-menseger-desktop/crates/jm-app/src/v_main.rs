@@ -212,9 +212,15 @@ impl Main {
         } else {
             (t::WARN, "Conectando…".to_string())
         };
+        let meu = self.me.status.as_ref().and_then(|x| x.clean(jm_core::engine::now_ms()));
+        let (cor, estado) = match &meu {
+            Some(s) if s.dnd => (t::DANGER, if s.t.is_empty() { "Não perturbe".to_string() } else { format!("{} {}", s.e, s.t).trim().to_string() }),
+            Some(s) if !s.t.is_empty() || !s.e.is_empty() => (cor, format!("{} {}", s.e, s.t).trim().to_string()),
+            _ => (cor, estado),
+        };
         let info = column![
             text(ui::ellipsis(&self.me.name, 22)).size(14).font(SEMI).color(t::FG),
-            row![container(Space::new()).width(7).height(7).style(t::rounded(cor, 4.0)), text(estado).size(11.5).wrapping(iced::widget::text::Wrapping::None).color(t::FG_DIM)]
+            row![container(Space::new()).width(7).height(7).style(t::rounded(cor, 4.0)), text(ui::ellipsis(&estado, 24)).size(11.5).wrapping(iced::widget::text::Wrapping::None).color(t::FG_DIM)]
                 .spacing(6)
                 .align_y(Alignment::Center),
         ]
@@ -231,6 +237,7 @@ impl Main {
             let mudo = self.call.as_ref().map(|c| c.muted).or(self.room.as_ref().map(|r| r.muted)).unwrap_or(false);
             r = r.push(ui::icon_button(if mudo { Icon::MicOff } else { Icon::Mic }, if mudo { "Ligar microfone" } else { "Desligar microfone" }, Some(Msg::ToggleMute), mudo));
         }
+        r = r.push(ui::icon_button(Icon::Smile, "Definir status", Some(Msg::OpenSetStatus), meu.is_some()));
         r = r.push(ui::icon_button(Icon::Settings, "Ajustes", Some(Msg::Go(Section::Settings)), false));
         container(r).padding([8, 8]).style(t::fill(t::mix(t::sidebar(), Color::BLACK, 0.25))).into()
     }

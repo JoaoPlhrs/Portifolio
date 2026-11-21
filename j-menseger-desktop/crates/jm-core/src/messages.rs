@@ -119,6 +119,40 @@ impl LinkPreview {
     }
 }
 
+/// Status personalizado: emoji, texto, "não perturbe" e até quando vale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CustomStatus {
+    /// Emoji (opcional).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub e: String,
+    /// Texto ("Jogando Valorant").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub t: String,
+    /// Não perturbe.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dnd: bool,
+    /// Some sozinho neste horário (ms); 0 = não some.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub x: i64,
+}
+
+fn is_zero(x: &i64) -> bool {
+    *x == 0
+}
+
+impl CustomStatus {
+    /// Apara o que veio de fora; `None` se estiver vazio ou vencido.
+    pub fn clean(&self, agora_ms: i64) -> Option<CustomStatus> {
+        let e: String = self.e.chars().filter(|c| !c.is_control()).take(8).collect();
+        let t = corta(&self.t, 80);
+        let x = self.x.max(0);
+        if (e.is_empty() && t.is_empty() && !self.dnd) || (x > 0 && x <= agora_ms) {
+            return None;
+        }
+        Some(CustomStatus { e, t, dnd: self.dnd, x })
+    }
+}
+
 /// Música tocando agora (por enquanto, só do Spotify).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Listening {
@@ -195,6 +229,9 @@ pub enum AppMessage {
         /// Jogos favoritos (versões antigas não mandam: fica como estava).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         g: Option<Vec<String>>,
+        /// Status personalizado (versões antigas não mandam).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        st: Option<CustomStatus>,
     },
     /// Banner do perfil (data URL; vazio tira o banner). Separado do perfil
     /// porque foto e banner juntos passariam do tamanho que os servidores
@@ -308,6 +345,12 @@ pub enum AppMessage {
     /// Quem recebeu abriu a mídia de visualização única (só em conversa a dois).
     #[serde(rename = "voo")]
     ViewOnceOpened { id: String },
+    /// Para a própria conta: "este aparelho existe" (nome, sistema).
+    #[serde(rename = "dev")]
+    Device { dev: String, n: String, p: String },
+    /// Para a própria conta: o aparelho `dev` deve sair e apagar a conta dele.
+    #[serde(rename = "devoff")]
+    DeviceOff { dev: String },
     /// Para a própria conta: "sou um aparelho novo, me mande o que você tem".
     #[serde(rename = "sreq")]
     SyncReq { dev: String },
@@ -561,6 +604,7 @@ mod tests {
     fn mensagens_internas_vao_e_voltam_em_json() {
         let casos: Vec<AppMessage> = vec![
             AppMessage::Profile {
+                st: None,
                 n: "Ana".into(),
                 s: "testando".into(),
                 c: 3,
