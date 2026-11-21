@@ -346,4 +346,16 @@ public class Bridge {
         if (i != null) start(i);
         else start(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.spotify.music")));
     }
+
+    /** Procura atualização; a resposta chega em JM.onUpdate. */
+    @JavascriptInterface
+    public void updateCheck() {
+        Updater.procurar(ctx);
+    }
+
+    /** Baixa e instala a atualização encontrada por updateCheck. */
+    @JavascriptInterface
+    public void updateDownload() {
+        Updater.baixar(ctx);
+    }
 }

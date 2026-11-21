@@ -4414,3 +4414,7 @@ textarea.inp {
 .meter { height: 8px; border-radius: 4px; background: var(--s2); overflow: hidden; margin-top: 10px; }
 .meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .08s linear; }
 .calllayer .rvid.fit { object-fit: contain; }
+
+/* barra de download da atualização */
+.upd-bar{height:6px;border-radius:99px;background:var(--line,rgba(255,255,255,.1));overflow:hidden;margin:10px 0 2px}
+.upd-bar>i{display:block;height:100%;background:var(--accent);border-radius:inherit;transition:width .25s ease}

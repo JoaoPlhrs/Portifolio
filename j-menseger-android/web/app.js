@@ -12038,6 +12038,12 @@ zoo`.split(`
       cancelNotify(t) {
         me("cancelNotify", t);
       },
+      updateCheck() {
+        me("updateCheck");
+      },
+      updateDownload() {
+        me("updateDownload");
+      },
       incomingCall(t) {
         me("incomingCall", JSON.stringify(t));
       },
@@ -19054,6 +19060,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     ${le({ i: "db", n: "Armazenamento", s: "Espa\xE7o usado e limpeza de m\xEDdia", act: "openStorage" })}
     <div class="label">Sobre</div>
     ${le({ i: "sparkle", n: "Sobre o J-Menseger", s: `Vers\xE3o ${h.version} \xB7 como a privacidade funciona`, act: "openAbout" })}
+    ${X.available ? le({ i: "download", n: jmUpd.info ? "Atualiza\xE7\xE3o dispon\xEDvel" : "Procurar atualiza\xE7\xF5es", s: jmUpd.info ? `Vers\xE3o ${M(jmUpd.info.versao)} \xB7 toque para instalar` : "O app procura sozinho a cada 6 horas", act: "updOpen", dot: !!jmUpd.info }) : ""}
     ${le({ i: "share", n: "Convidar amigos", s: "Compartilhe seu c\xF3digo", act: "shareMyCode" })}
     ${le({ i: "logout", n: "Sair e apagar deste aparelho", s: "Remove a conta e as conversas deste celular", act: "wipeAll", danger: !0 })}
     <div style="height:100px"></div>`;
@@ -19884,6 +19891,49 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         ((e.media.ready = !1), (e.media.err = !0), await t.db.put("msgs", e));
     J.pop(), _("M\xEDdia apagada");
   });
+  // ---- Atualização automática (o download e a instalação ficam no lado Android) ----
+  var jmUpd = { info: null, prog: -1, manual: !1, avisada: "" };
+  function jmUpdSheet() {
+    let t = jmUpd.info;
+    if (!t) return;
+    let e = t.tamanho ? ` \xB7 ${(t.tamanho / 1048576).toFixed(1)} MB` : "";
+    ee(`<h2 class="sh-title">Atualiza\xE7\xE3o dispon\xEDvel</h2><p class="sh-sub">Vers\xE3o ${M(t.versao)}${e} (voc\xEA tem a ${M(h.version)})</p>
+    ${t.novidades ? `<p class="sh-sub" style="white-space:pre-line">${M(t.novidades)}</p>` : ""}
+    <div class="upd-bar" id="updbar" ${jmUpd.prog < 0 ? "hidden" : ""}><i style="width:${Math.max(0, jmUpd.prog)}%"></i></div>
+    <p class="sh-sub" id="updtxt">${jmUpd.prog < 0 ? "O arquivo \xE9 conferido antes de instalar. O Android vai pedir para voc\xEA confirmar." : jmUpd.prog >= 100 ? "Abrindo o instalador\u2026" : `Baixando\u2026 ${jmUpd.prog}%`}</p>
+    <div class="two"><button class="btn ghost" data-act="updLater" style="margin:0">Depois</button><button class="btn" data-act="updGo" id="updgo" style="margin:0" ${jmUpd.prog >= 0 && jmUpd.prog < 100 ? "disabled" : ""}>${x("download", "sm")}&nbsp;Atualizar</button></div>`);
+  }
+  function jmUpdFound(t) {
+    let e = jmUpd.manual;
+    if (((jmUpd.manual = !1), (jmUpd.info = t || null), !t)) {
+      e && _("Voc\xEA j\xE1 tem a vers\xE3o mais nova");
+      return;
+    }
+    (e || jmUpd.avisada !== t.versao) && ((jmUpd.avisada = t.versao), jmUpdSheet());
+  }
+  function jmUpdProgress(t) {
+    jmUpd.prog = t;
+    let e = y("#updbar"),
+      a = y("#updtxt"),
+      n = y("#updgo");
+    e && ((e.hidden = !1), (e.firstElementChild.style.width = t + "%")),
+      a && (a.textContent = t >= 100 ? "Abrindo o instalador\u2026" : `Baixando\u2026 ${t}%`),
+      n && (n.disabled = t < 100),
+      t >= 100 && setTimeout(() => (jmUpd.prog = -1), 3e3);
+  }
+  function jmUpdError(t) {
+    jmUpd.prog = -1;
+    let e = y("#updgo"),
+      a = y("#updtxt");
+    e && (e.disabled = !1), a && (a.textContent = t), _(t, 4e3);
+  }
+  b("updOpen", () => {
+    jmUpd.info ? jmUpdSheet() : ((jmUpd.manual = !0), _("Procurando atualiza\xE7\xF5es\u2026"), X.updateCheck());
+  });
+  b("updLater", () => F());
+  b("updGo", () => {
+    jmUpd.prog < 0 && ((jmUpd.prog = 0), jmUpdProgress(0)), X.updateDownload();
+  });
   b("openAbout", () => {
     ee(`<div class="about">${qe(96)}<h3><span>J-</span>Menseger</h3><p>Vers\xE3o ${M(h.version)} \xB7 beta para testes</p>
     <div class="sizes">${qe(64)}${qe(44)}${qe(30)}</div></div>
@@ -20392,6 +20442,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       X.setSecure(!!e.settings.lockScreenshots),
       X.setBackground(!!(e.settings.notifications && e.settings.background)),
       setInterval(Mi, 1500),
+      X.available && (setTimeout(() => X.updateCheck(), 8e3), setInterval(() => X.updateCheck(), 216e5)),
       setInterval(() => Ae(), 6e4),
       Io)
     ) {
@@ -20462,6 +20513,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     onLink: (t) => Bf(t),
     onCallAction: (t) => bf(t),
     onSpotify: (t) => jmSpotifyFrom(t),
+    onUpdate: (t) => jmUpdFound(t),
+    onUpdateProgress: (t) => jmUpdProgress(t),
+    onUpdateError: (t) => jmUpdError(t),
     onResume: () => {
       h.engine && h.engine.wake();
     },
