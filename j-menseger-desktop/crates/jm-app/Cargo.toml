@@ -39,6 +39,8 @@ ureq = { version = "2.12", default-features = false, features = ["tls"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Registry", "Win32_UI_Shell", "Win32_System_Com", "Win32_Security"] }
 # Atalhos (.lnk) do instalador.
 mslnk = "0.1"
+# Notificação com campo de resposta (o mesmo pacote que o notify-rust usa).
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Data_Xml_Dom", "UI_Notifications"] }
 # Ícone na bandeja (perto do relógio) para continuar ligado com a janela fechada.
 tray-icon = { version = "0.21", default-features = false }
 

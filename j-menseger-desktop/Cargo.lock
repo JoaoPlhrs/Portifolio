@@ -3565,6 +3565,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "ureq",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "winresource",
  "zbus 5.19.0",

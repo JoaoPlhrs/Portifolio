@@ -78,6 +78,7 @@
         </receiver>
 
         <receiver android:name=".CallActionReceiver" android:exported="false" />
+        <receiver android:name=".NotifActionReceiver" android:exported="false" />
         <receiver android:name=".Updater$Status" android:exported="false" />
 
         <service

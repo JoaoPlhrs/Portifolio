@@ -10095,9 +10095,10 @@ zoo`.split(`
         return n ? n.v : a;
       }
       async setKv(e, a) {
-        return this.db.put("kv", { k: e, v: a });
+        return e === "lock" && (this.hasPin = !!a), this.db.put("kv", { k: e, v: a });
       }
       async load() {
+        (this.hasPin = !!(await this.kv("lock", null))),
         (this.me = await this.kv("me", null)),
           (this.settings = { ...Td, ...(await this.kv("settings", {})) });
         let e = await this.secure.get("sk");
@@ -17436,6 +17437,16 @@ zoo`.split(`
       n = e.value.slice(0, a).replace(/@([^\s@]{0,20})$/, "@" + t.dataset.n + " ");
     (e.value = n + e.value.slice(a)), e.setSelectionRange(n.length, n.length), e.focus({ preventScroll: !0 }), vo(e), wo(), jmMentionSuggest(e);
   });
+  // ---- Responder e marcar como lida pela notificação ----
+  async function jmNotifAct(t, e) {
+    // Pode chegar com a página acabando de abrir (sem tela): espera o motor.
+    for (let a = 0; a < 60 && !(h.engine && h.engine.pool && h.engine.me); a++) await new Promise((n) => setTimeout(n, 250));
+    let a = h.engine;
+    if (!a || typeof t != "string" || a.hasPin) return;
+    try {
+      e && e.trim() && (await a.sendText(t, e.trim())), await a.markRead(t), X.cancelNotify(t), Ae();
+    } catch {}
+  }
   // ---- Arquivos, encaminhar, visualização única e prévia de links ----
   var jmLpWait = new Map(),
     jmLpSeq = 0;
@@ -21437,6 +21448,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
             : "Voc\xEA tem uma nova mensagem",
       silent: !s.sounds,
       vibrate: !!s.vibrate,
+      // Responder pela notificação: não com PIN (seria um atalho por cima do bloqueio).
+      reply: !n.hasPin && (o.kind === "group" || (n.contacts.get(o.pk) || {}).status === "ok"),
+      read: !n.hasPin,
     });
   }
   function Z0(t) {
@@ -21633,6 +21647,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     onCallAction: (t) => bf(t),
     onSpotify: (t) => jmSpotifyFrom(t),
     onScreen: (t) => (t ? jmScreenOn() : jmScreenOff()),
+    onNotifReply: (t, e) => jmNotifAct(t, e),
+    onNotifRead: (t) => jmNotifAct(t, null),
     onLinkPreview: (t, e) => {
       let a = jmLpWait.get(t);
       a && (jmLpWait.delete(t), a(e));

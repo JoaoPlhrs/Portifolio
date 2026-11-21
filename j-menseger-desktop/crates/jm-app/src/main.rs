@@ -19,6 +19,7 @@ mod gifs;
 mod linkprev;
 mod icons;
 mod motion;
+mod notif;
 mod nowplaying;
 mod platform;
 mod setup;

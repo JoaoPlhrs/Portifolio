@@ -3150,6 +3150,27 @@ impl Main {
                 }
             }
         }
+        for a in crate::notif::poll() {
+            match a {
+                crate::notif::Action::Reply(chat, texto) => {
+                    let e = self.eng();
+                    let _ = self.engine.mark_read(&chat);
+                    tarefas.push(done(async move { e.send_text_with(&chat, &texto, None).await.map(|_| ()).map_err(s) }));
+                    tarefas.push(self.reload_chats());
+                }
+                crate::notif::Action::Read(chat) => {
+                    let _ = self.engine.mark_read(&chat);
+                    tarefas.push(self.reload_chats());
+                }
+                crate::notif::Action::Open(chat) => {
+                    if let Some(id) = self.window {
+                        tarefas.push(iced::window::set_mode(id, iced::window::Mode::Windowed));
+                        tarefas.push(iced::window::gain_focus(id));
+                    }
+                    tarefas.push(Task::done(Msg::OpenChat(chat)));
+                }
+            }
+        }
         if self.sync_at.elapsed() >= Duration::from_secs(60) {
             self.sync_at = Instant::now();
             let e = self.eng();
@@ -3378,7 +3399,9 @@ impl Main {
                 NotifPreview::None => ("J-Menseger".to_string(), "Nova mensagem".to_string()),
                 _ => (quem, "Nova mensagem".to_string()),
             };
-            platform::notify(titulo, corpo);
+            // Com PIN ligado, nada de responder pela notificação (seria um atalho por cima do bloqueio).
+            let livre = self.pin.is_none();
+            crate::notif::message(titulo, corpo, livre.then(|| chat.to_string()), livre && self.can_write(chat));
         }
     }
 }
