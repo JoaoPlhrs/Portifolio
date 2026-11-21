@@ -84,8 +84,12 @@ pub fn call_panel<'a>(m: &'a Main, c: &'a CallInfo) -> El<'a> {
                 .style(t::chip(t::WARN)),
         );
     }
-    if c.video && !acabou && !c.receiving_video {
-        avisos = avisos.push(ui::note("Chamada de vídeo: aqui você vê a câmera de quem está no celular. O computador manda a sua tela, não a câmera."));
+    if let Some((_, h)) = &m.local_preview {
+        // Sua câmera, pequena, como no canto das chamadas de vídeo.
+        avisos = avisos.push(
+            container(image(h.clone()).content_fit(ContentFit::Cover).width(176).height(132).border_radius(10.0))
+                .style(t::rounded(iced::Color::BLACK, 10.0)),
+        );
     }
     if let Some(b) = &c.banner {
         avisos = avisos.push(banner(b));
@@ -107,7 +111,14 @@ pub fn call_panel<'a>(m: &'a Main, c: &'a CallInfo) -> El<'a> {
             "Soundboard",
             ativo.then(|| Msg::SetPopup(Some(Popup::CallSounds))),
         ));
-        r = r.push(if c.sharing.is_some() {
+        let camera_on = c.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera"));
+        r = r.push(round_btn(
+            Icon::Video,
+            if camera_on { CallBtn::On } else { CallBtn::Normal },
+            if camera_on { "Desligar a câmera" } else { "Ligar a câmera" },
+            ativo.then_some(Msg::ToggleCamera),
+        ));
+        r = r.push(if c.sharing.is_some() && !camera_on {
             round_btn(Icon::Screen, CallBtn::On, "Parar de transmitir", Some(Msg::StopSharing))
         } else {
             round_btn(Icon::Screen, CallBtn::Normal, "Transmitir a tela", ativo.then_some(Msg::OpenShare))
@@ -437,7 +448,14 @@ pub fn stage(m: &Main) -> El<'_> {
     .spacing(12)
     .align_y(Alignment::Center);
     if em_chamada {
-        let transmitindo = m.call.as_ref().is_some_and(|c| c.sharing.is_some());
+        let camera_on = m.call.as_ref().is_some_and(|c| c.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera")));
+        let transmitindo = m.call.as_ref().is_some_and(|c| c.sharing.is_some()) && !camera_on;
+        barra = barra.push(round_btn(
+            Icon::Video,
+            if camera_on { CallBtn::On } else { CallBtn::Normal },
+            if camera_on { "Desligar a câmera" } else { "Ligar a câmera" },
+            Some(Msg::ToggleCamera),
+        ));
         barra = barra.push(if transmitindo {
             round_btn(Icon::Screen, CallBtn::On, "Parar de transmitir", Some(Msg::StopSharing))
         } else {

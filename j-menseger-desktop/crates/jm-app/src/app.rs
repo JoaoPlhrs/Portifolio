@@ -220,6 +220,8 @@ pub enum Msg {
     ShareQuality(Quality),
     ShareSource(u32),
     StopSharing,
+    ToggleCamera,
+    CameraToggled(Result<bool, String>),
     CallSound(String),
     SaveBannerSound,
     JoinRoom(String, String),

@@ -234,6 +234,8 @@ pub struct CallManager {
     banner: std::sync::Mutex<Option<SoundBanner>>,
     inbound: std::sync::Mutex<HashMap<String, (u32, Vec<Option<Vec<u8>>>)>>,
     last_snd: std::sync::Mutex<HashMap<String, Instant>>,
+    /// Prévia da sua câmera (largura, altura, RGBA, versão).
+    preview: Arc<std::sync::Mutex<Option<(u32, u32, Vec<u8>, u64)>>>,
 }
 
 /// Quanto tempo o aviso de chamada encerrada fica na tela.
@@ -250,7 +252,40 @@ impl CallManager {
             banner: std::sync::Mutex::new(None),
             inbound: std::sync::Mutex::new(HashMap::new()),
             last_snd: std::sync::Mutex::new(HashMap::new()),
+            preview: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Prévia da sua câmera, se ela estiver ligada e mudou desde `desde`.
+    pub fn camera_preview(&self, desde: u64) -> Option<(u64, u32, u32, Vec<u8>)> {
+        let g = self.preview.lock().unwrap();
+        let (w, h, px, v) = g.as_ref()?;
+        (*v > desde).then(|| (*v, *w, *h, px.clone()))
+    }
+
+    /// Câmeras do computador.
+    pub fn cameras(&self) -> Vec<Source> {
+        jm_media::camera::cameras()
+    }
+
+    /// Liga ou desliga a câmera na chamada. A câmera ocupa o lugar da
+    /// transmissão de tela (vai uma imagem por vez).
+    pub async fn toggle_camera(self: &Arc<Self>) -> Result<bool, String> {
+        let ligada = {
+            let g = self.active.lock().await;
+            let a = g.as_ref().ok_or("não há chamada em andamento")?;
+            a.sharing.as_ref().map(|(n, _)| n.starts_with("Câmera")).unwrap_or(false)
+        };
+        let transmitindo = self.active.lock().await.as_ref().is_some_and(|a| a.sharing.is_some());
+        if transmitindo {
+            self.stop_sharing().await;
+        }
+        if ligada {
+            return Ok(false);
+        }
+        let cam = self.cameras().into_iter().next().ok_or("Nenhuma câmera encontrada neste computador.")?;
+        self.start_sharing(cam, Quality::P720, Fps::Fps30).await?;
+        Ok(true)
     }
 
     /// Configuração da conexão a partir dos ajustes (TURN, esconder o IP).
@@ -822,6 +857,8 @@ impl CallManager {
         let parar = Arc::new(AtomicBool::new(false));
         let intervalo = fps.interval();
         let altura = quality.height();
+        let e_camera = source.kind == jm_media::screen::SourceKind::Camera;
+        let previa = Arc::clone(&self.preview);
 
         // Captura e compressão numa thread do sistema: é trabalho pesado e
         // bloqueante, e no Windows o capturador não pode atravessar threads.
@@ -855,6 +892,11 @@ impl CallManager {
                     let inicio = Instant::now();
                     let Ok(quadro) = capturador.grab() else { break };
                     let pronto = quadro.scale_to_height(altura);
+                    // Sua própria imagem, pequena, para a prévia na tela.
+                    if e_camera && n % 2 == 0 {
+                        let p = pronto.scale_to_height(240);
+                        *previa.lock().unwrap() = Some((p.width, p.height, p.rgba, n + 1));
+                    }
                     // Quadro inteiro no começo e sempre que o outro lado pedir.
                     match enc.encode(&pronto.rgba, n == 0 || pedido.take_keyframe_request()) {
                         Ok(pacotes) => {
@@ -907,6 +949,7 @@ impl CallManager {
                     if let Some((_, parar)) = a.sharing.take() {
                         parar.store(true, Ordering::Relaxed);
                     }
+                    *self.preview.lock().unwrap() = None;
                     Some(Arc::clone(&a.link))
                 }
                 None => None,

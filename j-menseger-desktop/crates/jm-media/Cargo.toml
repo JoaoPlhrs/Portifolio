@@ -7,6 +7,8 @@ license.workspace = true
 description = "Áudio, vídeo e captura de tela do J-Menseger"
 
 [dependencies]
+# Câmera do computador (Media Foundation no Windows, V4L2 no Linux).
+nokhwa = { version = "0.10", default-features = false, features = ["input-native", "decoding"] }
 anyhow.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

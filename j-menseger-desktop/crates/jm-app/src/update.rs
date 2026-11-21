@@ -5,7 +5,7 @@ use crate::calls::CallState;
 use crate::platform;
 use crate::state::*;
 use crate::theme::{self as t, Look};
-use iced::widget::text_editor;
+use iced::widget::{image, text_editor};
 use iced::Task;
 use jm_core::engine::{CallsFrom, ContactStatus, Engine, EngineEvent, MediaMeta, MessageBody, NotifPreview};
 use jm_core::groups::{ChannelKind, GroupPatch};
@@ -1291,7 +1291,22 @@ impl Main {
             }
 
             /* ---------------------------------------------- chamadas */
+            Msg::ToggleCamera => {
+                self.camera_wanted = false;
+                let c = Arc::clone(&self.calls);
+                Task::perform(async move { c.toggle_camera().await }, Msg::CameraToggled)
+            }
+            Msg::CameraToggled(r) => {
+                match r {
+                    Ok(false) => self.local_preview = None,
+                    Ok(true) => {}
+                    Err(e) => self.toast(e),
+                }
+                let c = Arc::clone(&self.calls);
+                Task::perform(async move { c.info().await }, Msg::CallUpdated)
+            }
             Msg::Call(pk, video) => {
+                self.camera_wanted = video;
                 self.close_overlays();
                 if self.room.is_some() {
                     self.toast("Saia da sala de voz para ligar.");
@@ -1309,6 +1324,7 @@ impl Main {
                 )
             }
             Msg::AcceptCall => {
+                self.camera_wanted = self.call.as_ref().is_some_and(|c| matches!(c.state, CallState::Ringing { video: true }));
                 let c = Arc::clone(&self.calls);
                 Task::perform(
                     async move {
@@ -2528,7 +2544,22 @@ impl Main {
             }
         }
         self.call = info;
+        // Sua câmera: prévia pequena, e ligar sozinha na chamada de vídeo.
+        let camera_ligada = self.call.as_ref().is_some_and(|c| c.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera")));
+        if camera_ligada {
+            let desde = self.local_preview.as_ref().map(|(v, _)| *v).unwrap_or(0);
+            if let Some((v, w, h, px)) = self.calls.camera_preview(desde) {
+                self.local_preview = Some((v, image::Handle::from_rgba(w, h, px)));
+            }
+        } else {
+            self.local_preview = None;
+        }
+        if self.camera_wanted && self.call.as_ref().is_some_and(|c| matches!(c.state, CallState::Active { .. })) {
+            self.camera_wanted = false;
+            return Task::done(Msg::ToggleCamera);
+        }
         if self.call.is_none() {
+            self.camera_wanted = false;
             self.remote_frame = None;
             if self.popup == Some(Popup::CallSounds) {
                 self.popup = None;

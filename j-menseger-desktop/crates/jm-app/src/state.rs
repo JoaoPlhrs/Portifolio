@@ -498,6 +498,10 @@ pub struct Main {
     pub room: Option<RoomInfo>,
     pub joining_room: bool,
     pub remote_frame: Option<(u64, image::Handle)>,
+    /// Sua câmera, pequena (versão, imagem).
+    pub local_preview: Option<(u64, image::Handle)>,
+    /// Ligar a câmera assim que a chamada de vídeo conectar.
+    pub camera_wanted: bool,
     pub share_quality: Quality,
 
     pub modal: Option<Modal>,
@@ -605,6 +609,8 @@ impl Main {
             room: None,
             joining_room: false,
             remote_frame: None,
+            local_preview: None,
+            camera_wanted: false,
             share_quality: Quality::P1080,
             modal: None,
             popup: None,

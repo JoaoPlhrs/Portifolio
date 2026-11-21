@@ -31,10 +31,11 @@ public class Bridge {
     static final String PREFS = "jm_native";
     private final Context ctx;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private PowerManager.WakeLock proximity;
+    private final ProximityGuard proximity;
 
     Bridge(Context ctx) {
         this.ctx = ctx.getApplicationContext();
+        this.proximity = new ProximityGuard(this.ctx);
     }
 
     private void ui(Runnable r) {
@@ -185,22 +186,11 @@ public class Bridge {
     }
 
     private void acquireProximity() {
-        try {
-            if (proximity == null) {
-                PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
-                if (!pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) return;
-                proximity = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "jmenseger:proximity");
-            }
-            if (!proximity.isHeld()) proximity.acquire(4 * 60 * 60 * 1000L);
-        } catch (Exception ignored) {
-        }
+        proximity.start();
     }
 
     private void releaseProximity() {
-        try {
-            if (proximity != null && proximity.isHeld()) proximity.release();
-        } catch (Exception ignored) {
-        }
+        proximity.stop();
     }
 
     /* ---------------- janela ---------------- */

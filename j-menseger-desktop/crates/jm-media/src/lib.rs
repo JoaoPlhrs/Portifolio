@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod audiofile;
 pub mod builtin;
+pub mod camera;
 pub mod codec;
 pub mod container;
 pub mod gif;
