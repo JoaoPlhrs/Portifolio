@@ -400,4 +400,19 @@ public class Bridge {
             return "";
         }
     }
+
+    /** Começa a transmitir a tela do celular (o Android pede permissão). Resposta em JM.onScreen. */
+    @JavascriptInterface
+    public void screenStart() {
+        ui(() -> {
+            Activity a = act();
+            if (a == null) App.get().runJs("window.JM&&JM.onScreen&&JM.onScreen(false)");
+            else ScreenShare.ask(a);
+        });
+    }
+
+    @JavascriptInterface
+    public void screenStop() {
+        ui(ScreenShare::stop);
+    }
 }

@@ -144,6 +144,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
+        if (req == ScreenShare.REQ) {
+            ScreenShare.onResult(this, res, data);
+            return;
+        }
         if (req == REQ_FILE) {
             ValueCallback<Uri[]> cb = fileCallback;
             fileCallback = null;

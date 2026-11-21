@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -67,7 +68,7 @@
         <service
             android:name=".ConnService"
             android:exported="false"
-            android:foregroundServiceType="remoteMessaging|microphone|camera" />
+            android:foregroundServiceType="remoteMessaging|microphone|camera|mediaProjection" />
 
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>

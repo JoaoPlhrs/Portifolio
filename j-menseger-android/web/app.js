@@ -12463,6 +12463,12 @@ zoo`.split(`
         return !Ie || me("foreground") !== !1;
       },
       /** Grava um arquivo (base64) na pasta Download; devolve onde ficou, "" se falhou, undefined no navegador. */
+      screenStart() {
+        me("screenStart");
+      },
+      screenStop() {
+        me("screenStop");
+      },
       saveFile(t, e) {
         return Ie ? me("saveFile", t, e) || "" : void 0;
       },
@@ -19057,9 +19063,10 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
         t.mic ? "mic" : "micoff",
         t.mic ? "Microfone" : "Mudo",
       ) +
-      e("cCam", t.cam, t.cam ? "video" : "videooff", "C\xE2mera") +
+      e("cCam", t.cam && !t.scr, t.cam && !t.scr ? "video" : "videooff", "C\xE2mera") +
+      (X.available ? e("cScreen", !!t.scr, "share", t.scr ? "Parar" : "Tela") : "") +
       `<button class="cbtn sbtn" data-act="cSounds"><span class="cc">${x("wave")}</span>Sons</button>` +
-      (t.cam
+      (t.cam && !t.scr
         ? e("cFlip", !1, "flip", "Virar")
         : e("cSpk", t.spk, "volume", "Alto-falante"))
     );
@@ -19436,6 +19443,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
   }
   function Ge(t) {
     if (!H) return;
+    H.scr && (X.screenStop(), jmScr && ((jmScr.on = !1), jmScr.track.stop(), (jmScr = null)));
     let e = H;
     if (
       ((H = null),
@@ -19560,7 +19568,55 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     let e = y("#ctrls");
     e && (e.innerHTML = Co(t)), z && at();
   });
-  b("cCam", () => _0());
+  b("cCam", () => {
+    let t = H || z;
+    t && t.scr ? jmScreenOff().then(() => _0()) : _0();
+  });
+  // ---- Transmitir a tela do celular: o Android captura, a página desenha num
+  // canvas e o canvas vira a trilha de vídeo (como a câmera).
+  var jmScr = null;
+  b("cScreen", () => {
+    let t = H || z;
+    t && (t.scr ? (X.screenStop(), jmScreenOff()) : (_("Escolha \u201CCome\xE7ar agora\u201D para transmitir"), X.screenStart()));
+  });
+  async function jmScreenOn() {
+    let t = H || z;
+    if (!t) return X.screenStop();
+    let e = document.createElement("canvas");
+    (e.width = 720), (e.height = 1280);
+    let a = e.getContext("2d"),
+      n = e.captureStream(15).getVideoTracks()[0],
+      s = { on: !0, track: n };
+    (jmScr = s),
+      (async () => {
+        for (; s.on; ) {
+          try {
+            let o = await fetch("/__screen.jpg?" + Date.now(), { cache: "no-store" });
+            if (o.ok) {
+              let r = await createImageBitmap(await o.blob());
+              (e.width !== r.width || e.height !== r.height) && ((e.width = r.width), (e.height = r.height)), a.drawImage(r, 0, 0), r.close();
+            }
+          } catch {}
+          await new Promise((o) => setTimeout(o, 70));
+        }
+      })(),
+      t.stream.getVideoTracks().forEach((o) => {
+        o.stop(), t.stream.removeTrack(o);
+      }),
+      t.stream.addTrack(n),
+      (t.cam = !0),
+      (t.scr = !0);
+    for (let o of as()) await o.setVideo(n), o.send({ t: "cam", on: !0 });
+    _("Transmitindo a sua tela"), H ? Sa() : at();
+  }
+  async function jmScreenOff() {
+    let t = H || z,
+      e = jmScr;
+    if (((jmScr = null), e && ((e.on = !1), e.track.stop()), !t || !t.scr)) return;
+    (t.scr = !1), (t.cam = !1), t.stream.getVideoTracks().forEach((a) => t.stream.removeTrack(a));
+    for (let a of as()) await a.setVideo(null), a.send({ t: "cam", on: !1 });
+    H ? Sa() : at();
+  }
   b("cFlip", () => O0());
   b("cSpk", () => {
     let t = H || z;
@@ -19727,6 +19783,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
   }
   function ss() {
     if (!z) return;
+    z.scr && (X.screenStop(), jmScr && ((jmScr.on = !1), jmScr.track.stop(), (jmScr = null)));
     let t = z;
     z = null;
     let e = h.engine;
@@ -21352,6 +21409,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     onLink: (t) => Bf(t),
     onCallAction: (t) => bf(t),
     onSpotify: (t) => jmSpotifyFrom(t),
+    onScreen: (t) => (t ? jmScreenOn() : jmScreenOff()),
     onUpdate: (t) => jmUpdFound(t),
     onUpdateProgress: (t) => jmUpdProgress(t),
     onUpdateError: (t) => jmUpdError(t),
