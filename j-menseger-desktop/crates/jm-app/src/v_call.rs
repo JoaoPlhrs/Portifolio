@@ -182,18 +182,32 @@ pub fn room_panel<'a>(m: &'a Main, r: &'a RoomInfo) -> El<'a> {
         cartoes.push(tile(m, &p.pk, p.speaking, !p.mic, p.connected, false));
     }
     let grade = row(cartoes).spacing(12).wrap();
+    // Quem está mandando imagem (câmera ou tela): miniaturas; clicar abre a tela cheia.
+    let camera = r.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera"));
+    let mut videos: Vec<El<'a>> = Vec::new();
+    if let (true, Some((_, h))) = (camera, &m.local_preview) {
+        videos.push(mini_video(h.clone(), format!("{} (você)", m.first_name(&me))));
+    }
+    for p in r.peers.iter().filter(|p| p.video) {
+        if let Some((_, h)) = m.room_frames.get(&p.pk) {
+            videos.push(mini_video(h.clone(), m.name_of(&p.pk)));
+        }
+    }
     let mut col = column![
         row![
             icon(Icon::Volume, 18.0, t::accent()),
-            text(canal).size(15).font(BOLD).color(t::FG),
+            text(canal.clone()).size(15).font(BOLD).color(t::FG),
             text(duration_label(r.since)).size(13).color(t::FG_DIM),
             ui::fill(),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-        grade,
     ]
     .spacing(12);
+    if !videos.is_empty() {
+        col = col.push(row(videos).spacing(10).wrap());
+    }
+    col = col.push(grade);
     if r.sem_microfone {
         col = col.push(ui::note("Sem microfone: você só ouve."));
     }
@@ -215,6 +229,12 @@ pub fn room_panel<'a>(m: &'a Main, r: &'a RoomInfo) -> El<'a> {
                     "Soundboard",
                     Some(Msg::SetPopup(Some(Popup::CallSounds)))
                 ),
+                round_btn(Icon::Video, if camera { CallBtn::On } else { CallBtn::Normal }, if camera { "Desligar a câmera" } else { "Ligar a câmera" }, Some(Msg::ToggleCamera)),
+                if r.sharing.is_some() && !camera {
+                    round_btn(Icon::Screen, CallBtn::On, "Parar de transmitir", Some(Msg::StopSharing))
+                } else {
+                    round_btn(Icon::Screen, CallBtn::Normal, "Transmitir a tela para a sala", Some(Msg::OpenShare))
+                },
                 round_btn(Icon::Maximize, CallBtn::Normal, "Tela cheia (F11)", Some(Msg::CallFull(true))),
                 round_btn(Icon::PhoneOff, CallBtn::Danger, "Sair da sala", Some(Msg::LeaveRoom)),
                 if !r.muted && !r.sem_microfone { mic_meter(r.mic_level) } else { Space::new().into() },
@@ -225,6 +245,25 @@ pub fn room_panel<'a>(m: &'a Main, r: &'a RoomInfo) -> El<'a> {
         .center_x(Length::Fill),
     );
     container(col).padding([16, 20]).width(Length::Fill).style(t::fill(t::mix(t::main_bg(), iced::Color::BLACK, 0.35))).into()
+}
+
+/// Miniatura de quem está mandando imagem na sala.
+fn mini_video<'a>(h: iced::widget::image::Handle, nome: String) -> El<'a> {
+    let etiqueta = container(container(text(ui::ellipsis(&nome, 22)).size(12).font(SEMI).color(Color::WHITE)).padding([3, 8]).style(t::rounded(Color { a: 0.62, ..Color::BLACK }, 6.0)))
+        .align_bottom(Length::Fill)
+        .align_left(Length::Fill)
+        .padding(6);
+    button(
+        container(stack![image(h).content_fit(ContentFit::Contain).width(Length::Fill).height(Length::Fill), etiqueta])
+            .width(240)
+            .height(135)
+            .clip(true)
+            .style(t::rounded(Color::BLACK, 10.0)),
+    )
+    .padding(0)
+    .style(t::ghost)
+    .on_press(Msg::CallFull(true))
+    .into()
 }
 
 /// Nível do seu microfone (para conferir se ele está pegando a voz).
@@ -346,8 +385,23 @@ pub fn stage(m: &Main) -> El<'_> {
         sub = g.map(|g| g.meta.name.clone()).unwrap_or_default();
         since = Some(r.since);
         (muted, sem_mic, nivel, banner_som, sair) = (r.muted, r.sem_microfone, r.mic_level, r.banner.as_ref(), Msg::LeaveRoom);
-        quadros.push(Quadro { pk: me.clone(), nome: format!("{} (você)", m.first_name(&me)), falando: r.me_speaking && !r.muted, mudo: r.muted, conectado: true, video: None, ao_vivo: false });
-        for p in &r.peers {
+        let camera = r.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera"));
+        let minha = if camera { m.local_preview.as_ref().map(|(_, h)| h.clone()) } else { None };
+        // Quem manda imagem vem primeiro (vai para o palco).
+        for p in r.peers.iter().filter(|p| p.video) {
+            let video = m.room_frames.get(&p.pk).map(|(_, h)| h.clone());
+            quadros.push(Quadro { pk: p.pk.clone(), nome: m.name_of(&p.pk), falando: p.speaking, mudo: !p.mic, conectado: p.connected, video, ao_vivo: false });
+        }
+        quadros.push(Quadro {
+            pk: me.clone(),
+            nome: format!("{} (você)", m.first_name(&me)),
+            falando: r.me_speaking && !r.muted,
+            mudo: r.muted,
+            conectado: true,
+            video: minha,
+            ao_vivo: r.sharing.is_some() && !camera,
+        });
+        for p in r.peers.iter().filter(|p| !p.video) {
             quadros.push(Quadro { pk: p.pk.clone(), nome: m.name_of(&p.pk), falando: p.speaking, mudo: !p.mic, conectado: p.connected, video: None, ao_vivo: false });
         }
     } else if let Some(c) = &m.call {
@@ -447,9 +501,10 @@ pub fn stage(m: &Main) -> El<'_> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    if em_chamada {
-        let camera_on = m.call.as_ref().is_some_and(|c| c.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera")));
-        let transmitindo = m.call.as_ref().is_some_and(|c| c.sharing.is_some()) && !camera_on;
+    {
+        let compartilhando = m.room.as_ref().map(|r| r.sharing.clone()).unwrap_or_else(|| m.call.as_ref().and_then(|c| c.sharing.clone()));
+        let camera_on = compartilhando.as_deref().is_some_and(|s| s.starts_with("Câmera"));
+        let transmitindo = compartilhando.is_some() && !camera_on;
         barra = barra.push(round_btn(
             Icon::Video,
             if camera_on { CallBtn::On } else { CallBtn::Normal },

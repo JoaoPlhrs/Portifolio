@@ -517,6 +517,8 @@ pub struct Main {
     pub room: Option<RoomInfo>,
     pub joining_room: bool,
     pub remote_frame: Option<(u64, image::Handle)>,
+    /// Última imagem de cada pessoa da sala que está mandando vídeo.
+    pub room_frames: HashMap<String, (u64, image::Handle)>,
     /// Sua câmera, pequena (versão, imagem).
     pub local_preview: Option<(u64, image::Handle)>,
     /// Ligar a câmera assim que a chamada de vídeo conectar.
@@ -646,6 +648,7 @@ impl Main {
             room: None,
             joining_room: false,
             remote_frame: None,
+            room_frames: HashMap::new(),
             local_preview: None,
             camera_wanted: false,
             update: None,

@@ -1628,8 +1628,7 @@ impl Main {
                     Ok(true) => {}
                     Err(e) => self.toast(e),
                 }
-                let c = Arc::clone(&self.calls);
-                Task::perform(async move { c.info().await }, Msg::CallUpdated)
+                self.after_media_change()
             }
             Msg::Call(pk, video) => {
                 self.camera_wanted = video;
@@ -1705,6 +1704,10 @@ impl Main {
                     self.joining_room = false;
                 }
                 self.room = info;
+                self.on_room_media()
+            }
+            Msg::RoomFrame(pk, v, h) => {
+                self.room_frames.insert(pk, (v, h));
                 Task::none()
             }
             Msg::FrameArrived(v, h) => {
@@ -1728,12 +1731,17 @@ impl Main {
             }
             Msg::StopSharing => {
                 let c = Arc::clone(&self.calls);
+                let sala = self.room.is_some();
                 Task::perform(
                     async move {
                         c.stop_sharing().await;
-                        c.info().await
+                        if sala {
+                            Msg::RoomUpdated(c.room_info().await)
+                        } else {
+                            Msg::CallUpdated(c.info().await)
+                        }
                     },
-                    Msg::CallUpdated,
+                    |m| m,
                 )
             }
             Msg::CallSound(id) => {
@@ -2862,6 +2870,58 @@ impl Main {
             }
             ConfirmKind::Block(pk) => Task::done(Msg::Block(pk)),
         }
+    }
+
+    /// Depois de ligar/desligar câmera ou tela: atualiza a sala ou a chamada.
+    fn after_media_change(&self) -> Task<Msg> {
+        let c = Arc::clone(&self.calls);
+        if self.room.is_some() {
+            Task::perform(async move { c.room_info().await }, Msg::RoomUpdated)
+        } else {
+            Task::perform(async move { c.info().await }, Msg::CallUpdated)
+        }
+    }
+
+    /// Sala de voz: busca as imagens novas de quem está mandando vídeo e a
+    /// prévia da sua câmera.
+    fn on_room_media(&mut self) -> Task<Msg> {
+        let Some(r) = &self.room else {
+            self.room_frames.clear();
+            if self.call.is_none() {
+                self.local_preview = None;
+            }
+            return Task::none();
+        };
+        let camera = r.sharing.as_deref().is_some_and(|s| s.starts_with("Câmera"));
+        if camera {
+            let desde = self.local_preview.as_ref().map(|(v, _)| *v).unwrap_or(0);
+            if let Some((v, w, h, px)) = self.calls.camera_preview(desde) {
+                self.local_preview = Some((v, image::Handle::from_rgba(w, h, px)));
+            }
+        } else {
+            self.local_preview = None;
+        }
+        let com_video: Vec<(String, u64)> = r.peers.iter().filter(|p| p.video).map(|p| (p.pk.clone(), p.frame_version)).collect();
+        self.room_frames.retain(|pk, _| com_video.iter().any(|(p, _)| p == pk));
+        let mut tarefas = Vec::new();
+        for (pk, versao) in com_video {
+            let visto = self.room_frames.get(&pk).map(|(v, _)| *v).unwrap_or(0);
+            if versao > visto {
+                let c = Arc::clone(&self.calls);
+                tarefas.push(Task::perform(
+                    async move {
+                        c.take_room_frame(&pk, visto)
+                            .await
+                            .map(|(v, img)| (pk, v, iced::widget::image::Handle::from_rgba(img.width, img.height, img.rgba)))
+                    },
+                    |r| match r {
+                        Some((pk, v, h)) => Msg::RoomFrame(pk, v, h),
+                        None => Msg::Noop,
+                    },
+                ));
+            }
+        }
+        Task::batch(tarefas)
     }
 
     fn on_call_info(&mut self, info: Option<crate::calls::CallInfo>) -> Task<Msg> {

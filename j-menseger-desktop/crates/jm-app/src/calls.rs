@@ -119,6 +119,9 @@ pub struct RoomPeerInfo {
     pub connected: bool,
     pub speaking: bool,
     pub mic: bool,
+    /// Está mandando imagem (câmera ou tela).
+    pub video: bool,
+    pub frame_version: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +135,8 @@ pub struct RoomInfo {
     pub me_speaking: bool,
     pub peers: Vec<RoomPeerInfo>,
     pub banner: Option<SoundBanner>,
+    /// O que você está mandando para a sala (câmera ou tela), se estiver.
+    pub sharing: Option<String>,
 }
 
 /// Uma conexão com alguém (chamada ou sala), com o que chegou por ela.
@@ -222,6 +227,11 @@ struct Room {
     stop: Arc<AtomicBool>,
     /// Pacotes do meu microfone, para mandar a todos.
     audio_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+    /// Minha imagem (câmera ou tela) já comprimida, para mandar a todos.
+    video_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+    /// Alguém entrou ou perdeu pacotes: o próximo quadro vai inteiro.
+    keyframe: Arc<AtomicBool>,
+    sharing: Option<(String, Arc<AtomicBool>)>,
 }
 
 /// Cuida da chamada atual e da sala de voz. Só uma das duas por vez.
@@ -271,13 +281,17 @@ impl CallManager {
     /// Liga ou desliga a câmera na chamada. A câmera ocupa o lugar da
     /// transmissão de tela (vai uma imagem por vez).
     pub async fn toggle_camera(self: &Arc<Self>) -> Result<bool, String> {
-        let ligada = {
-            let g = self.active.lock().await;
-            let a = g.as_ref().ok_or("não há chamada em andamento")?;
-            a.sharing.as_ref().map(|(n, _)| n.starts_with("Câmera")).unwrap_or(false)
+        let sala = self.room.lock().await.as_ref().map(|r| r.sharing.as_ref().map(|(n, _)| n.clone()));
+        let atual: Option<String> = match sala {
+            Some(s) => s,
+            None => {
+                let g = self.active.lock().await;
+                let a = g.as_ref().ok_or("não há chamada em andamento")?;
+                a.sharing.as_ref().map(|(n, _)| n.clone())
+            }
         };
-        let transmitindo = self.active.lock().await.as_ref().is_some_and(|a| a.sharing.is_some());
-        if transmitindo {
+        let ligada = atual.as_deref().is_some_and(|n| n.starts_with("Câmera"));
+        if atual.is_some() {
             self.stop_sharing().await;
         }
         if ligada {
@@ -394,6 +408,8 @@ impl CallManager {
                 connected: l.connected.load(Ordering::Relaxed),
                 speaking: l.speaking.load(Ordering::Relaxed),
                 mic: l.remote_mic.load(Ordering::Relaxed),
+                video: l.showing_video(),
+                frame_version: l.frame.try_lock().ok().and_then(|f| f.as_ref().map(|(v, _)| *v)).unwrap_or(0),
             })
             .collect();
         peers.sort_by(|a, b| a.pk.cmp(&b.pk));
@@ -407,7 +423,16 @@ impl CallManager {
             me_speaking: r.me_speaking.load(Ordering::Relaxed),
             peers,
             banner,
+            sharing: r.sharing.as_ref().map(|(n, _)| n.clone()),
         })
+    }
+
+    /// A imagem mais nova de alguém da sala, se for mais nova que `desde`.
+    pub async fn take_room_frame(&self, pk: &str, desde: u64) -> Option<(u64, DecodedFrame)> {
+        let link = self.room.lock().await.as_ref().and_then(|r| r.links.get(pk).cloned())?;
+        let g = link.frame.lock().await;
+        let (v, f) = g.as_ref()?;
+        (*v > desde).then(|| (*v, f.clone()))
     }
 
     pub async fn is_busy(&self) -> bool {
@@ -842,30 +867,81 @@ impl CallManager {
         screen::sources().unwrap_or_default()
     }
 
-    /// Começa a transmitir uma tela ou janela para quem está na chamada.
+    /// Começa a transmitir uma tela, janela ou câmera para quem está na
+    /// chamada — ou para todos da sala de voz.
     pub async fn start_sharing(self: &Arc<Self>, source: Source, quality: Quality, fps: Fps) -> Result<(), String> {
+        let rotulo = source.label();
+        let intervalo = fps.interval();
+        // Chamada a dois?
         let link = {
             let g = self.active.lock().await;
-            let a = g.as_ref().ok_or("não há chamada em andamento")?;
-            if a.sharing.is_some() {
+            match g.as_ref() {
+                Some(a) if a.sharing.is_some() => return Err("você já está transmitindo".into()),
+                Some(a) => Some(Arc::clone(&a.link)),
+                None => None,
+            }
+        };
+        if let Some(link) = link {
+            let conn = Arc::clone(&link.conn);
+            let pedido = Arc::clone(&conn);
+            let (parar, mut recebe) = self.spawn_capture(source, quality, fps, Arc::new(move || pedido.take_keyframe_request())).await?;
+            if let Some(a) = self.active.lock().await.as_mut() {
+                a.sharing = Some((rotulo, Arc::clone(&parar)));
+            }
+            // O celular só mostra imagem depois deste aviso (é o mesmo da câmera).
+            link.send(serde_json::json!({ "t": "cam", "on": true })).await;
+            tokio::task::spawn(async move {
+                while let Some(dados) = recebe.recv().await {
+                    if conn.send_video(&dados, intervalo).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            return Ok(());
+        }
+        // Sala de voz: comprime uma vez e manda para todos.
+        let (tx, kf, links) = {
+            let g = self.room.lock().await;
+            let r = g.as_ref().ok_or("não há chamada em andamento")?;
+            if r.sharing.is_some() {
                 return Err("você já está transmitindo".into());
             }
-            Arc::clone(&a.link)
+            (r.video_tx.clone(), Arc::clone(&r.keyframe), r.links.values().cloned().collect::<Vec<_>>())
         };
-        let conn = Arc::clone(&link.conn);
-        let rotulo = source.label();
+        let k2 = Arc::clone(&kf);
+        let (parar, mut recebe) = self.spawn_capture(source, quality, fps, Arc::new(move || k2.swap(false, Ordering::Relaxed))).await?;
+        if let Some(r) = self.room.lock().await.as_mut() {
+            r.sharing = Some((rotulo, Arc::clone(&parar)));
+        }
+        for l in links {
+            l.send(serde_json::json!({ "t": "cam", "on": true })).await;
+        }
+        tokio::task::spawn(async move {
+            while let Some(dados) = recebe.recv().await {
+                let _ = tx.send(Arc::new(dados));
+            }
+        });
+        Ok(())
+    }
+
+    /// Abre a captura numa thread do sistema (trabalho pesado e bloqueante;
+    /// no Windows o capturador não pode atravessar threads) e devolve os
+    /// pacotes comprimidos. `keyframe` diz quando mandar um quadro inteiro.
+    async fn spawn_capture(
+        &self,
+        source: Source,
+        quality: Quality,
+        fps: Fps,
+        keyframe: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(Arc<AtomicBool>, tokio::sync::mpsc::Receiver<Vec<u8>>), String> {
         let parar = Arc::new(AtomicBool::new(false));
         let intervalo = fps.interval();
         let altura = quality.height();
         let e_camera = source.kind == jm_media::screen::SourceKind::Camera;
         let previa = Arc::clone(&self.preview);
-
-        // Captura e compressão numa thread do sistema: é trabalho pesado e
-        // bloqueante, e no Windows o capturador não pode atravessar threads.
         let (avisa_inicio, inicio_pronto) = tokio::sync::oneshot::channel();
-        let (manda, mut recebe) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        let (manda, recebe) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
         let p = Arc::clone(&parar);
-        let pedido = Arc::clone(&conn);
         std::thread::Builder::new()
             .name("captura-de-tela".into())
             .spawn(move || {
@@ -897,8 +973,8 @@ impl CallManager {
                         let p = pronto.scale_to_height(240);
                         *previa.lock().unwrap() = Some((p.width, p.height, p.rgba, n + 1));
                     }
-                    // Quadro inteiro no começo e sempre que o outro lado pedir.
-                    match enc.encode(&pronto.rgba, n == 0 || pedido.take_keyframe_request()) {
+                    // Quadro inteiro no começo e sempre que alguém pedir.
+                    match enc.encode(&pronto.rgba, n == 0 || keyframe()) {
                         Ok(pacotes) => {
                             for pkt in pacotes {
                                 if manda.blocking_send(pkt.data).is_err() {
@@ -907,7 +983,7 @@ impl CallManager {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("falha ao comprimir a tela: {e}");
+                            tracing::warn!("falha ao comprimir a imagem: {e}");
                             break;
                         }
                     }
@@ -919,29 +995,35 @@ impl CallManager {
                 }
             })
             .map_err(|e| format!("não deu para iniciar a captura: {e}"))?;
-
         match inicio_pronto.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err("a captura de tela encerrou antes de começar".into()),
+            Ok(Ok(())) => Ok((parar, recebe)),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("a captura encerrou antes de começar".into()),
         }
-        if let Some(a) = self.active.lock().await.as_mut() {
-            a.sharing = Some((rotulo, Arc::clone(&parar)));
-        }
-        // O celular só mostra imagem depois deste aviso (é o mesmo da câmera).
-        link.send(serde_json::json!({ "t": "cam", "on": true })).await;
-        tokio::task::spawn(async move {
-            while let Some(dados) = recebe.recv().await {
-                if conn.send_video(&dados, intervalo).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(())
     }
 
-    /// Para a transmissão de tela.
+    /// Para a transmissão de tela (ou a câmera).
     pub async fn stop_sharing(self: &Arc<Self>) {
+        // Na sala: avisa todo mundo.
+        let sala = {
+            let mut g = self.room.lock().await;
+            match g.as_mut() {
+                Some(r) => {
+                    if let Some((_, parar)) = r.sharing.take() {
+                        parar.store(true, Ordering::Relaxed);
+                    }
+                    *self.preview.lock().unwrap() = None;
+                    Some(r.links.values().cloned().collect::<Vec<_>>())
+                }
+                None => None,
+            }
+        };
+        if let Some(links) = sala {
+            for l in links {
+                l.send(serde_json::json!({ "t": "cam", "on": false })).await;
+            }
+            return;
+        }
         let link = {
             let mut g = self.active.lock().await;
             match g.as_mut() {
@@ -1140,7 +1222,11 @@ impl CallManager {
                 (None, true)
             }
         };
+        let (video_tx, _) = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(32);
         *self.room.lock().await = Some(Room {
+            video_tx,
+            keyframe: Arc::new(AtomicBool::new(false)),
+            sharing: None,
             lid: lid.into(),
             ch: ch.into(),
             links: HashMap::new(),
@@ -1176,6 +1262,10 @@ impl CallManager {
     pub async fn leave_room(self: &Arc<Self>) {
         let Some(r) = self.room.lock().await.take() else { return };
         r.stop.store(true, Ordering::Relaxed);
+        if let Some((_, parar)) = &r.sharing {
+            parar.store(true, Ordering::Relaxed);
+            *self.preview.lock().unwrap() = None;
+        }
         let sala = RoomRef { lid: r.lid.clone(), ch: r.ch.clone() };
         for (pk, l) in &r.links {
             let sig = CallSignal { room: Some(sala.clone()), ..CallSignal::new("room", CallAction::End) };
@@ -1291,6 +1381,7 @@ impl CallManager {
         tokio::spawn(async move {
             let Ok(mut dec) = Decoder::new() else { return };
             let mut vad = VoiceDetector::default();
+            let mut dec_video: Option<VideoDecoder> = None;
             while let Some(ev) = eventos.recv().await {
                 match ev {
                     PeerEvent::State(ConnectionState::Connected) => {
@@ -1315,6 +1406,31 @@ impl CallManager {
                                 }
                             }
                         });
+                        // Minha imagem para esta pessoa (quando eu ligar câmera ou tela).
+                        let (mut vrx, kf) = {
+                            let g = eu.room.lock().await;
+                            let Some(r) = g.as_ref() else { break };
+                            (r.video_tx.subscribe(), Arc::clone(&r.keyframe))
+                        };
+                        kf.store(true, Ordering::Relaxed);
+                        let conn = Arc::clone(&link.conn);
+                        tokio::spawn(async move {
+                            loop {
+                                match vrx.recv().await {
+                                    Ok(p) => {
+                                        if conn.take_keyframe_request() {
+                                            kf.store(true, Ordering::Relaxed);
+                                        }
+                                        if conn.send_video(&p, Duration::from_millis(33)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    // Ficou para trás: pula e pede um quadro inteiro.
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => kf.store(true, Ordering::Relaxed),
+                                    Err(_) => break,
+                                }
+                            }
+                        });
                     }
                     PeerEvent::State(ConnectionState::Failed) | PeerEvent::State(ConnectionState::Closed) => {
                         eu.drop_room_peer(&link.pk).await;
@@ -1324,12 +1440,25 @@ impl CallManager {
                         let (eu2, l2) = (Arc::clone(&eu), Arc::clone(&link));
                         tokio::spawn(async move {
                             tokio::time::sleep(PRIMEIRA_FALA).await;
-                            let mic = !eu2.room.lock().await.as_ref().map(|r| r.muted.load(Ordering::Relaxed)).unwrap_or(false);
-                            l2.send(serde_json::json!({ "t": "cam", "on": false })).await;
+                            let (mic, cam) = eu2.room.lock().await.as_ref().map(|r| (!r.muted.load(Ordering::Relaxed), r.sharing.is_some())).unwrap_or((true, false));
+                            l2.send(serde_json::json!({ "t": "cam", "on": cam })).await;
                             l2.send(serde_json::json!({ "t": "mic", "on": mic })).await;
                         });
                     }
                     PeerEvent::Data(bytes) => eu.on_data(&link, &bytes).await,
+                    PeerEvent::Media { kind: MediaKind::Video, data } => {
+                        if dec_video.is_none() {
+                            dec_video = VideoDecoder::new().ok();
+                        }
+                        if let Some(d) = dec_video.as_mut() {
+                            if let Ok(Some(img)) = d.decode(&data) {
+                                let mut slot = link.frame.lock().await;
+                                let n = slot.as_ref().map(|(v, _)| v + 1).unwrap_or(1);
+                                *slot = Some((n, img));
+                                *link.frame_at.lock().unwrap() = Some(Instant::now());
+                            }
+                        }
+                    }
                     PeerEvent::Media { kind: MediaKind::Audio, data } => {
                         let pcm = if data.is_empty() { dec.decode_lost() } else { dec.decode(&data) };
                         if let Ok(pcm) = pcm {

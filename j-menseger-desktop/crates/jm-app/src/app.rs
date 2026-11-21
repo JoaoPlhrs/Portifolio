@@ -250,6 +250,7 @@ pub enum Msg {
     ToggleMute,
     CallUpdated(Option<crate::calls::CallInfo>),
     RoomUpdated(Option<crate::calls::RoomInfo>),
+    RoomFrame(String, u64, iced::widget::image::Handle),
     FrameArrived(u64, iced::widget::image::Handle),
     OpenShare,
     ShareQuality(Quality),
