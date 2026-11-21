@@ -33,7 +33,7 @@ const DAY: i64 = 86_400;
 
 #[path = "snapshot.rs"]
 mod snapshot;
-pub use snapshot::Restored;
+pub use snapshot::{open as open_backup, seal as seal_backup, Restored};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

@@ -9887,6 +9887,38 @@ zoo`.split(`
     }
     return e;
   }
+  // Backup: HKDF-SHA256 da chave da conta + AES-256-GCM sobre o JSON em gzip.
+  // Mesmo formato do PC ("JMBK1" + sal 16 + nonce 12 + cifrado).
+  async function jmBackupKey(t, e) {
+    let a = await crypto.subtle.importKey("raw", t, "HKDF", !1, ["deriveKey"]);
+    return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: e, info: new TextEncoder().encode("jmenseger-backup-v1") }, a, { name: "AES-GCM", length: 256 }, !1, ["encrypt", "decrypt"]);
+  }
+  async function jmGz(t, e) {
+    let a = new Blob([t]).stream().pipeThrough(e ? new CompressionStream("gzip") : new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(a).arrayBuffer());
+  }
+  async function jmSeal(t, e) {
+    let a = await jmGz(new TextEncoder().encode(e), !0),
+      n = crypto.getRandomValues(new Uint8Array(16)),
+      s = crypto.getRandomValues(new Uint8Array(12)),
+      o = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: s }, await jmBackupKey(t, n), a)),
+      r = new Uint8Array(33 + o.length);
+    return r.set(new TextEncoder().encode("JMBK1")), r.set(n, 5), r.set(s, 21), r.set(o, 33), r;
+  }
+  async function jmOpen(t, e) {
+    if (e.length < 49 || new TextDecoder().decode(e.subarray(0, 5)) !== "JMBK1") throw new Error("Este arquivo n\xE3o \xE9 um backup do J-Menseger.");
+    let a;
+    try {
+      a = await crypto.subtle.decrypt({ name: "AES-GCM", iv: e.subarray(21, 33) }, await jmBackupKey(t, e.subarray(5, 21)), e.subarray(33));
+    } catch {
+      throw new Error("Este backup \xE9 de outra conta (ou o arquivo est\xE1 corrompido).");
+    }
+    try {
+      return new TextDecoder().decode(await jmGz(new Uint8Array(a), !1));
+    } catch {
+      throw new Error("Backup corrompido.");
+    }
+  }
   var JM_PRES_HEARTBEAT = 24e4, JM_PRES_TTL = 54e4;
   /** Cargos do grupo: nome e cor, e quem tem cada um. Igual ao PC. */
   function jmCleanRoles(t, e) {
@@ -10318,6 +10350,12 @@ zoo`.split(`
         let n = e.pubkey,
           s = n === this.pk,
           o = s ? Wa(e, "p") : n;
+        if (s && o === this.pk && e.kind === jt) {
+          try {
+            await this.onSelfApp(JSON.parse(e.content));
+          } catch {}
+          return;
+        }
         if (!o || !Re.test(o) || o === this.pk) return;
         let r = this.contacts.get(o);
         if (r && r.status === "blocked") return;
@@ -11119,6 +11157,207 @@ zoo`.split(`
           try {
             await this.sendApp("dm:" + o.pk, { t: "pres", s: n }, { ephemeral: !0, selfCopy: !1, noTtl: !0 });
           } catch {}
+      }
+      // ---- Backup e a mesma conta em vários aparelhos (mesmo formato do PC) ----
+      async deviceId() {
+        let e = await this.kv("deviceId", null);
+        return e || ((e = Ka(8)), await this.setKv("deviceId", e)), e;
+      }
+      /** Retrato da conta. Com mensagens é o backup; sem, vai para o outro aparelho. */
+      async snapshot(e) {
+        let a = this.me || {},
+          n = { name: a.name || "", note: a.note || "", t: a.t | 0, games: a.games || [] };
+        e && ((n.pic = a.pic || null), (n.banner = a.banner || null));
+        let s = [...this.contacts.values()].map((c) => {
+            let l = { pk: c.pk, name: c.name || "", nick: c.nick || "", note: c.note || "", t: c.t | 0, status: c.status, verified: !!c.verified, relays: c.relays || [], games: c.games || [], addedAt: c.addedAt || 0 };
+            return e && ((l.pic = c.pic || null), (l.banner = c.banner || null)), l;
+          }),
+          o = [...this.groups.values()]
+            .filter((c) => !c.left)
+            .map((c) => {
+              let l = { lid: c.lid, sk: c.sk, old: (c.oldKeys || []).map((u) => u.sk), meta: c.meta, ver: c.ver, picV: c.picV || 0, mute: !!c.mute, gone: c.gone || [] };
+              return e && (l.pic = c.pic || null), l;
+            }),
+          r = [...this.chats.values()].map((c) => ({ key: c.key, ttl: c.ttl || 0, muted: !!c.muted, pinned: !!c.pinned, pins: c.pins || [] })),
+          i = {
+            v: 1,
+            app: "jmenseger",
+            by: "android",
+            dev: await this.deviceId(),
+            at: ve(),
+            me: n,
+            contacts: s,
+            groups: o,
+            chats: r,
+            settings: { readReceipts: !!this.settings.readReceipts, typing: !!this.settings.typing, presence: this.settings.presence !== !1, ttlDefault: this.settings.ttlDefault | 0, relays: this.settings.relays },
+          };
+        if (e) {
+          let c = [];
+          for (let l of await this.db.all("msgs")) {
+            if (!["text", "sys", "sound", "poll", "deleted"].includes(l.kind)) continue;
+            let u = { id: l.id, chat: l.chat, from: l.from, ts: l.ts, kind: l.kind };
+            for (let d of ["text", "sys", "v", "snd", "poll", "votes", "reply", "reacts", "status", "exp", "edited"]) l[d] !== void 0 && l[d] !== null && (u[d] = l[d]);
+            u.status === "failed" && (u.status = "pending"), c.push(u);
+          }
+          i.msgs = c.sort((l, u) => l.ts - u.ts);
+        }
+        return i;
+      }
+      /** Junta um retrato com o que já existe. Nada é apagado. */
+      async mergeSnapshot(e, a) {
+        if (!e || e.v !== 1) throw new Error("Vers\xE3o de backup desconhecida.");
+        let n = { contacts: 0, groups: 0, messages: 0 },
+          s = e.me || {};
+        (a || !(this.me && this.me.name)) &&
+          s.name &&
+          (await this.updateProfile({ name: s.name, note: s.note, t: Number.isInteger(s.t) ? s.t % 6 : void 0, pic: !(this.me && this.me.pic) && s.pic ? s.pic : void 0 }).catch(() => {}));
+        let o = { request: 0, ok: 1, blocked: 2 };
+        for (let c of Array.isArray(e.contacts) ? e.contacts : []) {
+          if (!c || !Re.test(c.pk) || c.pk === this.pk || !(c.status in o)) continue;
+          let l = this.contacts.get(c.pk),
+            u = l || (await this.ensureContact(c.pk, c.status));
+          !l && n.contacts++,
+            u.name || (u.name = ie(c.name, 40)),
+            u.note || (u.note = ie(c.note, 80)),
+            c.nick && (u.nick = ie(c.nick, 40)),
+            Number.isInteger(c.t) && (u.t = c.t % 6),
+            (!l || o[c.status] > o[u.status]) && (u.status = c.status),
+            (u.verified = !!(u.verified || c.verified)),
+            (u.relays && u.relays.length) || (u.relays = (Array.isArray(c.relays) ? c.relays : []).map(ha).filter(Boolean).slice(0, 5)),
+            (u.games && u.games.length) || !Array.isArray(c.games) || (u.games = jmCleanGames(c.games));
+          if (!u.pic && c.pic) {
+            let d = ma(c.pic);
+            d && (u.pic = d);
+          }
+          if (!u.banner && c.banner) {
+            let d = jmCleanBanner(c.banner);
+            d && (u.banner = d);
+          }
+          await this.db.put("contacts", u), this.emit("contact", u);
+        }
+        let r = !1;
+        for (let c of Array.isArray(e.groups) ? e.groups : []) {
+          if (!c || typeof c.sk != "string" || !Re.test(c.sk)) continue;
+          let l = Ke(_t(c.sk)),
+            u = Re.test(c.lid) ? c.lid : l,
+            d = this.groups.get(u),
+            f = Number(c.ver) || 1;
+          if (d && !d.left && d.ver >= f) continue;
+          let p = this.cleanMeta(c.meta, "");
+          if (!p) continue;
+          let v = {
+            ...(d || {}),
+            lid: u,
+            pk: l,
+            sk: c.sk,
+            oldKeys: (Array.isArray(c.old) ? c.old : []).filter((k) => typeof k == "string" && Re.test(k)).slice(0, 20).map((k) => ({ pk: Ke(_t(k)), sk: k })),
+            meta: p,
+            ver: f,
+            picV: Number(c.picV) || 0,
+            mute: !!c.mute,
+            gone: (Array.isArray(c.gone) ? c.gone : []).filter((k) => typeof k == "string").slice(0, 50),
+            joinedAt: (d && d.joinedAt) || ve(),
+          };
+          if ((delete v.left, !v.pic && c.pic)) {
+            let k = ma(c.pic);
+            k && (v.pic = k);
+          }
+          this.groups.set(u, v), await this.saveGroup(v), (!d || d.left) && (n.groups++, (r = !0));
+        }
+        r && this.resubscribe();
+        let i = new Set();
+        for (let c of Array.isArray(e.msgs) ? e.msgs : []) {
+          if (!c || !Re.test(c.id) || !Re.test(c.from) || typeof c.chat != "string" || !/^(dm:[0-9a-f]{64}|g:[0-9a-f]{64}:[a-z0-9-]+)$/.test(c.chat)) continue;
+          if (!["text", "sys", "sound", "poll", "deleted"].includes(c.kind) || !Number.isFinite(c.ts)) continue;
+          if (await this.db.get("msgs", c.id)) continue;
+          let l = { id: c.id, chat: c.chat, from: c.from, ts: c.ts, kind: c.kind };
+          c.kind === "text" && (l.text = ie(c.text, 6e3)),
+            c.kind === "sys" && ((l.sys = ie(c.sys, 20)), (l.v = Number(c.v) || 0)),
+            c.kind === "sound" && (l.snd = ie(c.snd, 20)),
+            c.kind === "poll" &&
+              c.poll &&
+              ((l.poll = { q: ie(c.poll.q, 200), o: (Array.isArray(c.poll.o) ? c.poll.o : []).map((k) => ie(k, 80)).slice(0, 10), m: c.poll.m ? 1 : 0 }), (l.votes = c.votes && typeof c.votes == "object" ? c.votes : {})),
+            Re.test(c.reply || "") && (l.reply = c.reply),
+            c.reacts && typeof c.reacts == "object" && (l.reacts = c.reacts),
+            ["pending", "sent", "delivered", "read"].includes(c.status) && (l.status = c.status),
+            Number.isFinite(c.exp) && (l.exp = c.exp),
+            Number.isFinite(c.edited) && (l.edited = c.edited);
+          if (l.exp && l.exp <= ve()) continue;
+          await this.db.put("msgs", l), n.messages++, i.add(c.chat);
+        }
+        for (let c of Array.isArray(e.chats) ? e.chats : []) {
+          if (!c || typeof c.key != "string" || !/^(dm:[0-9a-f]{64}|g:[0-9a-f]{64}:[a-z0-9-]+)$/.test(c.key) || c.key === "dm:" + this.pk) continue;
+          let l = this.chatFor(c.key);
+          Number.isFinite(c.ttl) && (l.ttl = Math.max(0, Math.min(28 * Za, c.ttl))),
+            typeof c.muted == "boolean" && (l.muted = c.muted),
+            typeof c.pinned == "boolean" && (l.pinned = c.pinned),
+            Array.isArray(c.pins) && c.pins.length && (l.pins = c.pins.filter((u) => Re.test(u)).slice(0, 50)),
+            await this.saveChat(l),
+            i.add(c.key);
+        }
+        for (let c of i) await this.refreshLast(c);
+        if (a && e.settings) {
+          let c = e.settings;
+          for (let [l, u] of [["readReceipts", "boolean"], ["typing", "boolean"], ["presence", "boolean"], ["ttlDefault", "number"]])
+            typeof c[l] === u && (this.settings[l] = c[l]);
+          await this.setKv("settings", this.settings), this.emit("settings", this.settings);
+        }
+        return this.emit("chats"), n;
+      }
+      async exportBackup() {
+        let e = JSON.stringify(await this.snapshot(!0));
+        return jmSeal(this.sk, e);
+      }
+      async importBackup(e) {
+        let a = await jmOpen(this.sk, e),
+          n;
+        try {
+          n = JSON.parse(a);
+        } catch {
+          throw new Error("Backup corrompido.");
+        }
+        return this.mergeSnapshot(n, !0);
+      }
+      async sendSelf(e) {
+        if (!this.pool) return !1;
+        let a = Sd(this.sk, jt, JSON.stringify(e), [["p", this.pk]]),
+          n = oi(a, this.sk, this.pk, { expiration: be() + 2 * Za });
+        return (await this.pool.publish(n, [])).ok;
+      }
+      async onSelfApp(e) {
+        if (!e || typeof e.t != "string") return;
+        let a = await this.deviceId();
+        if (e.dev === a) return;
+        if (e.t === "sreq") return void this.syncPush(!0).catch(() => {});
+        if (e.t === "sync" && e.d) {
+          let n = await this.mergeSnapshot(e.d, !1);
+          n.contacts + n.groups > 0 && this.emit("synced", n);
+        }
+      }
+      /** Pede aos outros aparelhos da conta o que eles têm (uma vez por instalação). */
+      async syncRequest() {
+        (await this.kv("syncReq", !1)) || ((await this.sendSelf({ t: "sreq", dev: await this.deviceId() })) && (await this.setKv("syncReq", !0)));
+      }
+      /** Manda contatos, grupos e ajustes para os outros aparelhos, em pedaços. */
+      async syncPush(e) {
+        if (!this.pool || this.pool.openCount() === 0) return;
+        let a = await this.snapshot(!1),
+          n = JSON.stringify({ ...a, at: null }),
+          s = Nt(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(n)))).slice(0, 24);
+        if (!e && (await this.kv("syncHash", "")) === s) return;
+        if (!e && !a.contacts.length && !a.groups.length) return void (await this.setKv("syncHash", s));
+        let o = { contacts: a.contacts, groups: a.groups, chats: a.chats },
+          r = { ...a, contacts: [], groups: [], chats: [] },
+          i = [],
+          c = JSON.parse(JSON.stringify(r));
+        for (let l of ["contacts", "groups", "chats"])
+          for (let u of o[l]) {
+            let d = JSON.stringify(u).length;
+            d > 24e3 || (JSON.stringify(c).length + d > 24e3 && (i.push(c), (c = JSON.parse(JSON.stringify(r)))), c[l].push(u));
+          }
+        i.push(c);
+        for (let l of i) if (!(await this.sendSelf({ t: "sync", dev: a.dev, d: l }))) return;
+        await this.setKv("syncHash", s);
       }
       async deleteForAll(e, a) {
         await this.applyDelete(e, a, this.pk),
@@ -12218,6 +12457,10 @@ zoo`.split(`
       },
       updateCheck() {
         me("updateCheck");
+      },
+      /** Grava um arquivo (base64) na pasta Download; devolve onde ficou, "" se falhou, undefined no navegador. */
+      saveFile(t, e) {
+        return Ie ? me("saveFile", t, e) || "" : void 0;
       },
       updateDownload() {
         me("updateDownload");
@@ -19782,6 +20025,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       }
       <label class="lbl">Chave secreta (avan\xE7ado)</label>
       <div class="idbox selectable"><span id="nsecbox">nsec1\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span><button class="ibtn sm" data-act="revealNsec" aria-label="Mostrar chave">${x("eye", "sm")}</button></div>
+      <div class="label" style="padding-left:0">Usar em outro aparelho</div>
+      <p class="sh-sub">No PC ou em outro celular, escolha \u201CJ\xE1 tenho uma conta\u201D e digite estas palavras. Com este aparelho aberto, o outro recebe seus contatos e grupos sozinho. As mensagens novas chegam nos dois; para levar o hist\xF3rico antigo, use Armazenamento \u2192 Fazer backup.</p>
       <button class="btn" data-act="wordsDone">J\xE1 anotei</button>
       <div style="height:30px"></div></div></div>`,
     ),
@@ -20412,7 +20657,10 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     J.open(
       "storage",
       `<div class="sc-top"><div class="subhead"><button class="ibtn" data-act="back" aria-label="Voltar">${x("back")}</button><h2>Armazenamento</h2></div>
-    <div class="scroll"><div class="label">Neste aparelho</div>
+    <div class="scroll"><div class="label">Backup</div>
+      ${le({ i: "download", n: "Fazer backup das conversas", s: "Arquivo cifrado com a chave da sua conta: s\xF3 abre com as suas palavras. Fotos e \xE1udios n\xE3o entram.", act: "backupExport" })}
+      ${le({ i: "refresh", n: "Restaurar backup", s: "Junta mensagens, contatos e grupos do arquivo com os daqui. Nada \xE9 apagado.", act: "backupImport" })}
+      <div class="label">Neste aparelho</div>
       ${le({ i: "db", n: "Espa\xE7o usado pelo app", act: "noop", val: t })}
       ${le({ i: "image", n: "Fotos e \xE1udios", act: "noop", val: (a / 1048576).toFixed(1) + " MB" })}
       <div style="padding:0 18px"><button class="btn ghost" data-act="clearMedia">Apagar fotos e \xE1udios deste aparelho</button></div>
@@ -20420,6 +20668,32 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     );
   });
   b("noop", () => {});
+  b("backupExport", async () => {
+    _("Preparando o backup\u2026", 6e3);
+    try {
+      let t = await h.engine.exportBackup(),
+        e = `J-Menseger backup ${new Date().toISOString().slice(0, 10)}.jmbackup`,
+        a = X.saveFile(e, Fa.enc(t));
+      if (a === void 0) {
+        let n = document.createElement("a");
+        (n.href = URL.createObjectURL(new Blob([t], { type: "application/octet-stream" }))), (n.download = e), n.click(), setTimeout(() => URL.revokeObjectURL(n.href), 5e3), _("Backup salvo");
+      } else a ? ee(`<h2 class="sh-title">Backup salvo</h2><p class="sh-sub">Est\xE1 em <b>${M(a)}</b>. Guarde junto com as suas palavras de recupera\xE7\xE3o: sem elas o arquivo n\xE3o abre.</p><button class="btn" data-act="closeSheet">Entendi</button>`) : _("N\xE3o foi poss\xEDvel salvar o backup.");
+    } catch (t) {
+      _(t.message || "N\xE3o foi poss\xEDvel fazer o backup.");
+    }
+  });
+  b("backupImport", async () => {
+    let t = await Kn(".jmbackup,application/octet-stream,*/*");
+    if (t) {
+      _("Restaurando\u2026", 8e3);
+      try {
+        let e = await h.engine.importBackup(new Uint8Array(await t.arrayBuffer()));
+        _(`Backup restaurado: ${e.messages} mensagens, ${e.contacts} contatos e ${e.groups} grupos novos`, 4e3), Ae();
+      } catch (e) {
+        _(e.message || "N\xE3o foi poss\xEDvel restaurar.", 4e3);
+      }
+    }
+  });
   b("clearMedia", async () => {
     if (
       !(await ge({
@@ -20920,6 +21194,9 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
           a.key === e &&
           (J.popTo("chat"), J.pop(), _("Este canal foi apagado por um admin."));
       }),
+      t.on("synced", (e) => {
+        _(`Seu outro aparelho mandou ${e.contacts} contatos e ${e.groups} grupos`, 3500), Ae(), Be();
+      }),
       t.on("pins", (e) => {
         C && C.key === e && jmPinBar();
       }),
@@ -20998,6 +21275,8 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
       setInterval(Mi, 1500),
       X.available && (setTimeout(() => X.updateCheck(), 8e3), setInterval(() => X.updateCheck(), 216e5)),
       setTimeout(() => jmPresTick(!0), 2500),
+      setTimeout(() => e.syncRequest().then(() => e.syncPush(!1)).catch(() => {}), 1e4),
+      setInterval(() => e.syncPush(!1).catch(() => {}), 6e4),
       setInterval(() => jmPresTick(), 6e4),
       setInterval(() => Ae(), 6e4),
       Io)

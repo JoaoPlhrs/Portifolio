@@ -323,6 +323,10 @@ fn recovery(m: &Main) -> El<'_> {
         }
         None => corpo.push(ui::note("Esta conta foi restaurada pela chave secreta, sem palavras. Guarde a chave abaixo.")),
     }
+    corpo.push(ui::label("Usar em outro aparelho"));
+    corpo.push(ui::note(
+        "No celular ou em outro PC, escolha “Já tenho uma conta” e digite estas palavras. Com este aparelho aberto, o outro recebe seus contatos e grupos sozinho. As mensagens novas chegam nos dois; para levar o histórico antigo, use Armazenamento → Fazer backup.",
+    ));
     corpo.push(ui::label("Chave secreta (avançado)"));
     corpo.push(
         container(
