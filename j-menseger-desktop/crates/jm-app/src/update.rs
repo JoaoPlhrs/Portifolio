@@ -1540,6 +1540,18 @@ impl Main {
                     Ok(format!("Backup restaurado: {} mensagens, {} contatos e {} grupos novos", r.messages, r.contacts, r.groups))
                 })
             }
+            Msg::TrayClose(on) => {
+                self.tray_close = on;
+                let _ = self.engine.set_ui_pref("tray", &on);
+                Task::none()
+            }
+            Msg::TrayAutostart(on) => match crate::tray::set_autostart(on) {
+                Ok(()) => {
+                    self.autostart = on;
+                    Task::none()
+                }
+                Err(e) => self.toast_t(&e),
+            },
             Msg::MemberMenu(lid, pk) => open_menu(CtxKind::Member(lid, pk)),
             Msg::SetAdmin(lid, pk, on) => {
                 self.menu = None;
@@ -2977,6 +2989,20 @@ impl Main {
                     e
                 })),
             ));
+        }
+        if crate::tray::SUPPORTED {
+            crate::tray::ensure();
+            for ev in crate::tray::poll() {
+                match ev {
+                    crate::tray::Ev::Show => {
+                        if let Some(id) = self.window {
+                            tarefas.push(iced::window::set_mode(id, iced::window::Mode::Windowed));
+                            tarefas.push(iced::window::gain_focus(id));
+                        }
+                    }
+                    crate::tray::Ev::Quit => tarefas.push(iced::exit()),
+                }
+            }
         }
         if self.sync_at.elapsed() >= Duration::from_secs(60) {
             self.sync_at = Instant::now();

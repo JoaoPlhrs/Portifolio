@@ -78,5 +78,10 @@
 
         <receiver android:name=".CallActionReceiver" android:exported="false" />
         <receiver android:name=".Updater$Status" android:exported="false" />
+
+        <service
+            android:name=".WakeJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>

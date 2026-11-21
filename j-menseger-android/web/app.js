@@ -12458,6 +12458,10 @@ zoo`.split(`
       updateCheck() {
         me("updateCheck");
       },
+      /** A tela está aberta? (no navegador, sempre) */
+      foreground() {
+        return !Ie || me("foreground") !== !1;
+      },
       /** Grava um arquivo (base64) na pasta Download; devolve onde ficou, "" se falhou, undefined no navegador. */
       saveFile(t, e) {
         return Ie ? me("saveFile", t, e) || "" : void 0;
@@ -21454,7 +21458,7 @@ No app: Adicionar contato \u2192 cole este c\xF3digo.`;
     await Qd(a),
       Z0(a),
       n ? (await rs(), Tf()) : (Ea("chats", !0), $f()),
-      (h.visible = !document.hidden);
+      (h.visible = !document.hidden && X.foreground());
   }
   X0();
 })();

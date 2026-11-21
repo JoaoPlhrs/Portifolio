@@ -529,6 +529,12 @@ pub struct Main {
     pub update_at: Instant,
     /// Último aviso de online/ausente (ausente?, quando).
     pub pres_sent: Option<(bool, Instant)>,
+    /// Fechar a janela deixa o app na bandeja (Windows).
+    pub tray_close: bool,
+    /// Já avisou que o app continua na bandeja.
+    pub tray_told: bool,
+    /// Abre junto com o Windows.
+    pub autostart: bool,
     /// Última conferência da sincronia com os outros aparelhos da conta.
     pub sync_at: Instant,
     /// Mensagem destacada depois de pular até ela.
@@ -647,6 +653,9 @@ impl Main {
             update_msg: None,
             update_at: Instant::now() - Duration::from_secs(6 * 3600 - 8),
             pres_sent: None,
+            tray_close: engine.ui_pref::<bool>("tray").unwrap_or(true),
+            tray_told: false,
+            autostart: crate::tray::autostart(),
             sync_at: Instant::now() - Duration::from_secs(50),
             flash: None,
             share_quality: Quality::P1080,

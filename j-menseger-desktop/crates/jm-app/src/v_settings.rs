@@ -522,8 +522,34 @@ fn notifications(m: &Main) -> El<'_> {
                 ),
                 ui::setting(Some(Icon::Volume), "Sons no app", Some("Toque curto quando chega mensagem".into()), Trail::Switch(s.sounds, |v| Msg::Toggle(Toggle::Sounds, v)), None, false),
             ]),
+            if crate::tray::SUPPORTED {
+                ui::group(vec![
+                    ui::setting(
+                        Some(Icon::Minimize),
+                        "Continuar ligado ao fechar a janela",
+                        Some("Fica na bandeja, perto do relógio, recebendo mensagens e chamadas".into()),
+                        Trail::Switch(m.tray_close, Msg::TrayClose),
+                        None,
+                        false,
+                    ),
+                    ui::setting(
+                        Some(Icon::Refresh),
+                        "Abrir ao ligar o computador",
+                        Some("Começa escondido na bandeja".into()),
+                        Trail::Switch(m.autostart, Msg::TrayAutostart),
+                        None,
+                        false,
+                    ),
+                ])
+            } else {
+                ui::vspace(0.0)
+            },
             ui::vspace(6.0),
-            ui::note("O que aparece no texto da notificação se ajusta em Privacidade e segurança → Prévia nas notificações. No computador, o app precisa estar aberto (pode ficar minimizado) para receber."),
+            ui::note(if crate::tray::SUPPORTED {
+                "O que aparece no texto da notificação se ajusta em Privacidade e segurança → Prévia nas notificações. Com a janela fechada, o J-Menseger continua na bandeja e avisa do que chegar; para sair de vez, use o ícone da bandeja."
+            } else {
+                "O que aparece no texto da notificação se ajusta em Privacidade e segurança → Prévia nas notificações. No computador, o app precisa estar aberto (pode ficar minimizado) para receber."
+            }),
         ],
     )
 }

@@ -123,6 +123,9 @@ pub enum Msg {
     Focus(bool),
     WindowSize(Size),
     WindowId(Option<iced::window::Id>),
+    CloseRequested(iced::window::Id),
+    TrayClose(bool),
+    TrayAutostart(bool),
     FileHover(bool),
     FileDropped(PathBuf),
     Key(Key),
@@ -567,6 +570,18 @@ impl App {
                 self.onb = Onboard { notify: true, tone: rand_tone(), ..Default::default() };
                 Task::none()
             }
+            Msg::CloseRequested(id) => match &mut self.screen {
+                // Fica na bandeja: conectado, com notificações.
+                Screen::Main(m) if crate::tray::SUPPORTED && m.tray_close => {
+                    m.focused = false;
+                    if !m.tray_told {
+                        m.tray_told = true;
+                        crate::platform::notify("J-Menseger continua ligado".into(), "Está na bandeja, perto do relógio. Para sair, clique com o botão direito no ícone.".into());
+                    }
+                    iced::window::set_mode(id, iced::window::Mode::Hidden)
+                }
+                _ => iced::exit(),
+            },
             outra => match &mut self.screen {
                 Screen::Main(m) => m.update(outra),
                 _ => Task::none(),
@@ -596,6 +611,7 @@ fn on_event(ev: iced::Event, status: iced::event::Status, id: iced::window::Id) 
             *CURSOR.lock().unwrap() = position;
             None
         }
+        iced::Event::Window(W::CloseRequested) => Some(Msg::CloseRequested(id)),
         iced::Event::Window(W::Focused) => Some(Msg::Focus(true)),
         iced::Event::Window(W::Unfocused) => Some(Msg::Focus(false)),
         iced::Event::Window(W::Resized(s)) => Some(Msg::WindowSize(s)),

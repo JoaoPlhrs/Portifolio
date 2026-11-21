@@ -129,11 +129,22 @@ public class Bridge {
 
     /* ---------------- segundo plano e chamadas ---------------- */
 
+    /** A tela do app está aberta na frente? (a página roda também sem tela) */
+    @JavascriptInterface
+    public boolean foreground() {
+        return MainActivity.resumed;
+    }
+
     @JavascriptInterface
     public void setBackground(boolean on) {
         prefs().edit().putBoolean("bg", on).apply();
-        if (on) ConnService.sync(ctx);
-        else if (!ConnService.inCall) ctx.stopService(new Intent(ctx, ConnService.class));
+        if (on) {
+            ConnService.sync(ctx);
+            WakeJob.schedule(ctx);
+        } else {
+            WakeJob.cancel(ctx);
+            if (!ConnService.inCall) ctx.stopService(new Intent(ctx, ConnService.class));
+        }
     }
 
     @JavascriptInterface
