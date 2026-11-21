@@ -781,7 +781,7 @@ impl Main {
                     .chat
                     .as_ref()
                     .and_then(|c| c.messages.iter().find(|m| m.id == id))
-                    .is_some_and(|m| m.from_me && !matches!(m.body, MessageBody::Deleted | MessageBody::System { .. }));
+                    .is_some_and(|m| (m.from_me || self.can_moderate(&m.chat)) && !matches!(m.body, MessageBody::Deleted | MessageBody::System { .. }));
                 self.modal = Some(Modal::DeleteMsg { id, mine });
                 Task::none()
             }
@@ -1456,8 +1456,8 @@ impl Main {
                     let r = id.as_ref().and_then(|id| g.as_ref().and_then(|g| g.meta.roles.iter().find(|r| &r.id == id).cloned()));
                     let n = g.map(|g| g.meta.roles.len()).unwrap_or(0);
                     *form = Some(match r {
-                        Some(r) => RoleForm { id: Some(r.id), name: r.n, c: r.c },
-                        None => RoleForm { id: None, name: String::new(), c: (n % 8) as u8 },
+                        Some(r) => RoleForm { id: Some(r.id), name: r.n, c: r.c, p: r.p },
+                        None => RoleForm { id: None, name: String::new(), c: (n % 8) as u8, p: Vec::new() },
                     });
                     if id.is_none() && n >= jm_core::groups::MAX_ROLES {
                         *form = None;
@@ -1471,6 +1471,52 @@ impl Main {
                     f.name = v.chars().take(24).collect();
                 }
                 Task::none()
+            }
+            Msg::RolePerm(perm, on) => {
+                if let Some(Modal::Roles { form: Some(f), .. }) = &mut self.modal {
+                    f.p.retain(|x| x != &perm);
+                    if on {
+                        f.p.push(perm);
+                    }
+                }
+                Task::none()
+            }
+            Msg::OpenEvent => {
+                self.close_overlays();
+                let amanha = chrono::Local::now() + chrono::Duration::days(1);
+                self.modal = Some(Modal::NewEvent { title: String::new(), date: amanha.format("%d/%m/%Y").to_string(), time: "20:00".into(), desc: String::new() });
+                Task::none()
+            }
+            Msg::EventField(k, v) => {
+                if let Some(Modal::NewEvent { title, date, time, desc }) = &mut self.modal {
+                    match k {
+                        0 => *title = v.chars().take(120).collect(),
+                        1 => *date = v.chars().take(10).collect(),
+                        2 => *time = v.chars().take(5).collect(),
+                        _ => *desc = v.chars().take(500).collect(),
+                    }
+                }
+                Task::none()
+            }
+            Msg::EventSend => {
+                let Some(Modal::NewEvent { title, date, time, desc }) = &self.modal else { return Task::none() };
+                let quando = chrono::NaiveDateTime::parse_from_str(&format!("{} {}", date.trim(), time.trim()), "%d/%m/%Y %H:%M")
+                    .ok()
+                    .and_then(|d| d.and_local_timezone(chrono::Local).single());
+                let Some(quando) = quando else { return self.toast_t("Data ou hora inválida. Use 23/11/2026 e 20:00.") };
+                if title.trim().is_empty() {
+                    return self.toast_t("Dê um nome ao evento.");
+                }
+                let (t2, d2, at) = (title.trim().to_string(), desc.trim().to_string(), quando.timestamp_millis());
+                self.modal = None;
+                let Some(key) = self.open_key() else { return Task::none() };
+                let e = self.eng();
+                Task::batch([done(async move { e.send_event(&key, &t2, at, &d2).await.map(|_| ()).map_err(s) }), to_bottom()])
+            }
+            Msg::Rsvp(id, r) => {
+                let Some(key) = self.open_key() else { return Task::none() };
+                let e = self.eng();
+                done(async move { e.rsvp(&key, &id, &r).await.map_err(s) })
             }
             Msg::RoleColor(c) => {
                 if let Some(Modal::Roles { form: Some(f), .. }) = &mut self.modal {
@@ -1486,12 +1532,26 @@ impl Main {
                     return Task::none();
                 }
                 let lid = lid.clone();
-                let patch = match f.id {
-                    Some(id) => GroupPatch::EditRole { id, n: Some(f.name.trim().into()), c: Some(f.c) },
-                    None => GroupPatch::AddRole { n: f.name.trim().into(), c: f.c },
+                let patches = match f.id {
+                    Some(id) => vec![GroupPatch::EditRole { id, n: Some(f.name.trim().into()), c: Some(f.c), p: Some(f.p) }],
+                    None => {
+                        // Cargo novo com poderes: cria e, em seguida, liga os poderes.
+                        let antes: Vec<String> = self.engine.group(&lid).map(|g| g.meta.roles.iter().map(|r| r.id.clone()).collect()).unwrap_or_default();
+                        let e = self.eng();
+                        let (l2, n, c, p) = (lid.clone(), f.name.trim().to_string(), f.c, f.p);
+                        return done(async move {
+                            e.edit_group(&l2, &[GroupPatch::AddRole { n, c }]).await.map_err(s)?;
+                            if !p.is_empty() {
+                                if let Some(novo) = e.group(&l2).and_then(|g| g.meta.roles.iter().find(|r| !antes.contains(&r.id)).map(|r| r.id.clone())) {
+                                    e.edit_group(&l2, &[GroupPatch::EditRole { id: novo, n: None, c: None, p: Some(p) }]).await.map_err(s)?;
+                                }
+                            }
+                            Ok(())
+                        });
+                    }
                 };
                 let e = self.eng();
-                done(async move { e.edit_group(&lid, &[patch]).await.map_err(s) })
+                done(async move { e.edit_group(&lid, &patches).await.map_err(s) })
             }
             Msg::RoleDelete(id) => {
                 let Some(Modal::Roles { lid, form }) = &mut self.modal else { return Task::none() };
@@ -3171,6 +3231,14 @@ impl Main {
                 }
             }
         }
+        if self.evt_at.elapsed() >= Duration::from_secs(30) {
+            self.evt_at = Instant::now();
+            for (chat, titulo, at) in self.engine.due_event_reminders(15 * 60_000) {
+                let min = ((at - jm_core::engine::now_ms()) / 60_000).max(0);
+                let quando = if min <= 1 { "agora".to_string() } else { format!("em {min} minutos") };
+                crate::notif::message(format!("📅 {titulo}"), format!("Começa {quando}."), Some(chat), false);
+            }
+        }
         if self.sync_at.elapsed() >= Duration::from_secs(60) {
             self.sync_at = Instant::now();
             let e = self.eng();
@@ -3356,7 +3424,7 @@ impl Main {
 
     /// Mensagem de outra pessoa: som, toque do soundboard e notificação.
     fn on_incoming(&mut self, chat: &str, m: &jm_core::engine::Message, visible: bool) {
-        let mencao = matches!(&m.body, MessageBody::Text(t) if self.mentions_me(chat, t));
+        let mencao = matches!(&m.body, MessageBody::Text(t) if self.mentions_me(chat, t, &m.author));
         let silenciada = !mencao && self.summary(chat).is_some_and(|c| c.muted)
             || chat
                 .strip_prefix("g:")

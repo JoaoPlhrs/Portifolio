@@ -737,12 +737,18 @@ impl Main {
         v
     }
 
-    /// Pode fixar mensagens: em conversa a dois, sempre; em grupo, só admins.
+    /// Pode fixar mensagens: em conversa a dois, sempre; em grupo, admins e
+    /// cargos com esse poder.
     pub fn can_pin(&self, key: &str) -> bool {
         match key.strip_prefix("g:").and_then(|r| r.split(':').next()) {
-            Some(lid) => self.group(lid).is_some_and(|g| g.meta.is_admin(&self.me_pk())),
+            Some(lid) => self.group(lid).is_some_and(|g| g.meta.can(&self.me_pk(), "pin")),
             None => self.can_write(key),
         }
+    }
+
+    /// Pode apagar mensagens dos outros (grupo, admin ou cargo com "del").
+    pub fn can_moderate(&self, key: &str) -> bool {
+        key.strip_prefix("g:").and_then(|r| r.split(':').next()).and_then(|lid| self.group(lid)).is_some_and(|g| g.meta.can(&self.me_pk(), "del"))
     }
 
     /// A pessoa pode escrever nesta conversa (contato aceito ou canal de grupo).

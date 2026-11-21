@@ -265,7 +265,7 @@ fn message_row<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, emenda: b
     };
     let topo = if emenda { 2.0 } else { 8.0 };
     let destaque = m.flash.as_ref().filter(|(id, t0)| id == &msg.id && t0.elapsed().as_secs_f32() < 2.6).map(|(_, t0)| 1.0 - t0.elapsed().as_secs_f32() / 2.6);
-    let mencao = !mine && matches!(&msg.body, MessageBody::Text(s) if m.mentions_me(&c.key, s));
+    let mencao = !mine && matches!(&msg.body, MessageBody::Text(s) if m.mentions_me(&c.key, s, &msg.author));
     let linha: El<'a> = match (destaque, mencao) {
         (Some(a), _) => container(linha).padding([2, 6]).style(t::rounded(t::with_alpha(t::accent(), 0.22 * a), 8.0)).into(),
         (None, true) => container(linha).padding([2, 6]).style(t::rounded(t::with_alpha(MENCAO, 0.09), 8.0)).into(),
@@ -308,6 +308,7 @@ fn bubble<'a>(m: &'a Main, c: &'a OpenChat, msg: &'a CoreMessage, mostrar_nome: 
     let corpo: El<'a> = match &msg.body {
         MessageBody::Text(s) => rich_m(m, &c.key, s),
         MessageBody::Poll { q, o, multi, votes } => poll(m, msg, q, o, *multi, votes),
+        MessageBody::Event { title, at, desc, rsvp } => event_card(m, msg, title, *at, desc, rsvp),
         MessageBody::Deleted => row![icon(Icon::Ban, 14.0, t::FG_FAINT), text(if mine { "Você apagou esta mensagem" } else { "Mensagem apagada" }).size(14).color(t::FG_FAINT)]
             .spacing(6)
             .align_y(Alignment::Center)
@@ -421,6 +422,59 @@ fn rich_m<'a>(m: &Main, key: &str, s: &str) -> El<'a> {
         })
         .collect();
     rich_text(spans).size(14.5).color(t::FG).on_link_click(Msg::OpenUrl).into()
+}
+
+/// Evento: quando, descrição, quem vai e os botões de resposta.
+fn event_card<'a>(m: &'a Main, msg: &'a CoreMessage, title: &'a str, at: i64, desc: &'a str, rsvp: &'a BTreeMap<String, String>) -> El<'a> {
+    use chrono::TimeZone;
+    let quando = chrono::Local.timestamp_millis_opt(at).single();
+    const DIAS: [&str; 7] = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
+    let data = quando
+        .map(|d| {
+            use chrono::Datelike;
+            format!("{}, {} às {}", DIAS[d.weekday().num_days_from_monday() as usize], d.format("%d/%m"), d.format("%H:%M"))
+        })
+        .unwrap_or_default();
+    let falta = at - jm_core::engine::now_ms();
+    let quando_txt = if falta < -3 * 3_600_000 {
+        "Já aconteceu".to_string()
+    } else if falta < 0 {
+        "Acontecendo agora".to_string()
+    } else if falta < 3_600_000 {
+        format!("Em {} min", falta / 60_000 + 1)
+    } else if falta < 86_400_000 {
+        format!("Em {} h", falta / 3_600_000)
+    } else if falta < 2 * 86_400_000 {
+        "Amanhã".to_string()
+    } else {
+        format!("Em {} dias", falta / 86_400_000)
+    };
+    let conta = |r: &str| rsvp.values().filter(|x| x.as_str() == r).count();
+    let meu = rsvp.get(&m.me_pk()).cloned().unwrap_or_default();
+    let mut col = column![
+        row![
+            container(icon(Icon::Clock, 18.0, t::accent_ink())).center(34).style(t::rounded(t::accent(), 8.0)),
+            column![text(title.to_string()).size(15).font(BOLD).color(t::FG), text(format!("{data} · {quando_txt}")).size(12.5).color(t::accent())].spacing(1),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(8)
+    .width(320);
+    if !desc.is_empty() {
+        col = col.push(text(desc.to_string()).size(13.5).color(t::FG_DIM));
+    }
+    col = col.push(text(format!("{} vão · {} talvez · {} não vão", conta("y"), conta("m"), conta("n"))).size(12).color(t::FG_DIM));
+    let botao = |rotulo: &'static str, r: &'static str| -> El<'a> {
+        let sel = meu == r;
+        button(text(rotulo).size(13).font(SEMI).color(if sel { t::accent_ink() } else { t::FG }))
+            .padding([6, 12])
+            .style(if sel { t::call_btn(t::CallBtn::Accept) } else { t::call_btn(t::CallBtn::Normal) })
+            .on_press(Msg::Rsvp(msg.id.clone(), if sel { String::new() } else { r.to_string() }))
+            .into()
+    };
+    col = col.push(row![botao("Vou", "y"), botao("Talvez", "m"), botao("Não vou", "n")].spacing(6));
+    col.into()
 }
 
 /// Enquete: cada opção é um botão com a barra de votos por trás.
@@ -1099,6 +1153,7 @@ fn attach_popup<'a>() -> El<'a> {
             ui::menu_item(Icon::Upload, "Arquivo (até 5 MB)", Msg::PickFile, false),
             ui::menu_item(Icon::Wave, "Som do soundboard", Msg::SetPopup(Some(Popup::Sounds)), false),
             ui::menu_item(Icon::Checks, "Enquete", Msg::OpenPoll, false),
+            ui::menu_item(Icon::Clock, "Evento", Msg::OpenEvent, false),
         ]
         .spacing(2),
     )

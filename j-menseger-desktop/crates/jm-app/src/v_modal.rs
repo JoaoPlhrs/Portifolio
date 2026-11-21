@@ -169,6 +169,22 @@ pub fn view<'a>(m: &'a Main, modal: &'a Modal) -> El<'a> {
         Modal::Crop(c) => crop(m, c),
         Modal::Search { all, query } => search(m, all, query),
         Modal::Forward { query, .. } => forward(m, query),
+        Modal::NewEvent { title, date, time, desc } => card(
+            440.0,
+            column![
+                head("Novo evento", Some("Todos da conversa podem responder Vou, Talvez ou Não vou. Quem vai recebe um lembrete 15 minutos antes.")),
+                ui::field("Nome", iced::widget::text_input("Ex.: Jogatina de sábado", title).on_input(|v| Msg::EventField(0, v)).padding([10, 12]).size(14.5).style(t::input)),
+                row![
+                    ui::field("Data", iced::widget::text_input("23/11/2026", date).on_input(|v| Msg::EventField(1, v)).padding([10, 12]).size(14.5).style(t::input)),
+                    ui::field("Hora", iced::widget::text_input("20:00", time).on_input(|v| Msg::EventField(2, v)).padding([10, 12]).size(14.5).style(t::input)),
+                ]
+                .spacing(10),
+                ui::field("Descrição (opcional)", iced::widget::text_input("Onde, o que levar…", desc).on_input(|v| Msg::EventField(3, v)).padding([10, 12]).size(14.5).style(t::input)),
+                row![ui::fill(), ui::ghost(None, "Cancelar", Some(Msg::Key(Key::Escape))), ui::primary(Some(Icon::Send), "Criar evento", Some(Msg::EventSend))].spacing(8),
+            ]
+            .spacing(12)
+            .into(),
+        ),
         Modal::ViewOnce { handle } => card(
             640.0,
             column![
@@ -431,6 +447,14 @@ fn roles<'a>(m: &'a Main, lid: &'a str, form: Option<&'a RoleForm>) -> El<'a> {
                 head(if f.id.is_some() { "Editar cargo" } else { "Novo cargo" }, None),
                 ui::field("Nome", ui::input("Ex.: Moderador", &f.name, Msg::RoleName).id(ROLE_NAME_ID).on_submit(Msg::RoleSave)),
                 ui::field("Cor", cores),
+                ui::field("Poderes", {
+                    let mut c = column![].spacing(6);
+                    for (k, rotulo) in jm_core::groups::PERMS {
+                        let on = f.p.iter().any(|x| x == k);
+                        c = c.push(row![text(rotulo).size(14).color(t::FG).width(Length::Fill), toggler(on).on_toggle(move |v| Msg::RolePerm(k.to_string(), v)).size(20)].align_y(Alignment::Center));
+                    }
+                    c.push(text("Mudar canais, membros e cargos continua só com admins.").size(12).color(t::FG_DIM))
+                }),
                 botoes,
             ]
             .spacing(14)

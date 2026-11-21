@@ -61,7 +61,14 @@ pub struct Role {
     /// Uma das 8 cores da paleta (0 a 7), igual no celular.
     #[serde(default)]
     pub c: u8,
+    /// Poderes do cargo: `pin` (fixar), `del` (apagar mensagens dos outros),
+    /// `todos` (mencionar @todos). Mudar o grupo continua só com admins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub p: Vec<String>,
 }
+
+/// Poderes que um cargo pode dar.
+pub const PERMS: [(&str, &str); 3] = [("pin", "Fixar mensagens"), ("del", "Apagar mensagens de outros"), ("todos", "Mencionar @todos")];
 
 pub const MAX_ROLES: usize = 12;
 pub const MAX_ROLES_POR_MEMBRO: usize = 4;
@@ -91,6 +98,11 @@ const MAX_ADMINS: usize = 10;
 impl GroupMeta {
     pub fn is_admin(&self, pk: &str) -> bool {
         self.owner == pk || self.admins.iter().any(|a| a == pk)
+    }
+
+    /// A pessoa tem este poder (admins têm todos).
+    pub fn can(&self, pk: &str, perm: &str) -> bool {
+        self.is_admin(pk) || self.roles_of(pk).iter().any(|r| r.p.iter().any(|x| x == perm))
     }
 
     /// Cargos de um membro, na ordem do grupo.
@@ -286,7 +298,7 @@ pub enum GroupPatch {
     RemoveChannel(String),
     Admin { pk: String, on: bool },
     AddRole { n: String, c: u8 },
-    EditRole { id: String, n: Option<String>, c: Option<u8> },
+    EditRole { id: String, n: Option<String>, c: Option<u8>, p: Option<Vec<String>> },
     RemoveRole(String),
     MemberRole { pk: String, id: String, on: bool },
 }
@@ -356,10 +368,10 @@ impl GroupMeta {
                     getrandom_bytes(&mut b);
                     let id: String = b.iter().map(|x| format!("{x:02x}")).collect();
                     let n = clamp(n, 24);
-                    self.roles.push(Role { id, n: if n.is_empty() { "Cargo".into() } else { n }, c: c % 8 });
+                    self.roles.push(Role { id, n: if n.is_empty() { "Cargo".into() } else { n }, c: c % 8, p: Vec::new() });
                 }
             }
-            GroupPatch::EditRole { id, n, c } => {
+            GroupPatch::EditRole { id, n, c, p } => {
                 if let Some(r) = self.roles.iter_mut().find(|r| &r.id == id) {
                     if let Some(n) = n {
                         let n = clamp(n, 24);
@@ -369,6 +381,9 @@ impl GroupMeta {
                     }
                     if let Some(c) = c {
                         r.c = c % 8;
+                    }
+                    if let Some(p) = p {
+                        r.p = p.clone();
                     }
                 }
             }
@@ -513,6 +528,8 @@ impl GroupMeta {
                 r.n = "Cargo".into();
             }
             r.c %= 8;
+            r.p.retain(|x| PERMS.iter().any(|(k, _)| k == x));
+            r.p.dedup();
         }
         let ids: Vec<String> = self.roles.iter().map(|r| r.id.clone()).collect();
         let membros = self.members.clone();

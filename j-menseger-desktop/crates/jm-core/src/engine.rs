@@ -208,6 +208,9 @@ pub enum MessageBody {
     /// Enquete: pergunta, opções, se aceita várias respostas e os votos
     /// (`{chave pública: [opções]}`).
     Poll { q: String, o: Vec<String>, multi: bool, votes: BTreeMap<String, Vec<u8>> },
+    /// Evento do grupo (ou da conversa): título, quando (ms), descrição e
+    /// respostas (`{chave pública: "y" | "m" | "n"}`).
+    Event { title: String, at: i64, desc: String, rsvp: BTreeMap<String, String> },
     Deleted,
 }
 
@@ -220,6 +223,7 @@ impl MessageBody {
             MessageBody::Media(_) => "media",
             MessageBody::Invite { .. } => "invite",
             MessageBody::Poll { .. } => "poll",
+            MessageBody::Event { .. } => "event",
             MessageBody::Deleted => "deleted",
         }
     }
@@ -239,6 +243,7 @@ impl MessageBody {
             MessageBody::Poll { q, o, multi, votes } => {
                 serde_json::json!({ "q": q, "o": o, "m": *multi as u8, "votes": votes }).to_string()
             }
+            MessageBody::Event { title, at, desc, rsvp } => serde_json::json!({ "ti": title, "at": at, "d": desc, "rsvp": rsvp }).to_string(),
             MessageBody::Deleted => "{}".into(),
         }
     }
@@ -266,6 +271,12 @@ impl MessageBody {
                 name: text,
                 joined: v["joined"].as_bool().unwrap_or(false),
                 data: serde_json::from_value::<InviteData>(v["inv"].clone()).ok().map(Box::new),
+            },
+            "event" => MessageBody::Event {
+                title: v["ti"].as_str().unwrap_or_default().to_string(),
+                at: v["at"].as_i64().unwrap_or(0),
+                desc: v["d"].as_str().unwrap_or_default().to_string(),
+                rsvp: serde_json::from_value(v["rsvp"].clone()).unwrap_or_default(),
             },
             "poll" => MessageBody::Poll {
                 q: v["q"].as_str().unwrap_or_default().to_string(),
@@ -1070,9 +1081,16 @@ impl Engine {
                 }
             }
             AppMessage::Delete { ids } => {
-                self.apply_delete(key, &ids.into_iter().take(100).collect::<Vec<_>>(), from)?;
+                self.apply_delete(key, &ids.into_iter().take(100).collect::<Vec<_>>(), from, false)?;
             }
             AppMessage::Edit { id, x } => self.apply_edit(key, &id, &x, from, ts)?,
+            AppMessage::Event { ti, at, d } => {
+                if !mine {
+                    self.ensure_contact(peer, ContactStatus::Request)?;
+                }
+                self.add_event(key, rid.clone(), from, mine, ts, &ti, at, &d, exp_of(r))?;
+            }
+            AppMessage::Rsvp { id, r: resp } => self.apply_rsvp(key, &id, &resp, from)?,
             AppMessage::ViewOnceOpened { id } if !mine => self.mark_view_once_opened(key, &id, true)?,
             AppMessage::Pin { id, on } => self.apply_pin(key, &id, on != 0)?,
             AppMessage::Poll { q, o, m } => {
@@ -1405,7 +1423,7 @@ impl Engine {
             }
             AppMessage::Delete { ids } => {
                 if let Some(key) = key.filter(|_| !gone) {
-                    self.apply_delete(&key, &ids.into_iter().take(100).collect::<Vec<_>>(), from)?;
+                    self.apply_delete(&key, &ids.into_iter().take(100).collect::<Vec<_>>(), from, g.meta.can(from, "del"))?;
                 }
             }
             AppMessage::Edit { id, x } => {
@@ -1413,8 +1431,18 @@ impl Engine {
                     self.apply_edit(&key, &id, &x, from, ts)?;
                 }
             }
+            AppMessage::Event { ti, at, d } => {
+                if let Some(key) = key.clone().filter(|_| !gone) {
+                    self.add_event(&key, rid.to_string(), from, mine, ts, &ti, at, &d, exp_of(r))?;
+                }
+            }
+            AppMessage::Rsvp { id, r: resp } => {
+                if let Some(key) = key.clone().filter(|_| !gone) {
+                    self.apply_rsvp(&key, &id, &resp, from)?;
+                }
+            }
             AppMessage::Pin { id, on } => {
-                if let Some(key) = key.filter(|_| !gone && g.meta.is_admin(from)) {
+                if let Some(key) = key.filter(|_| !gone && g.meta.can(from, "pin")) {
                     self.apply_pin(&key, &id, on != 0)?;
                 }
             }
@@ -1527,6 +1555,7 @@ impl Engine {
             MessageBody::Sound { .. } => "Som do soundboard".into(),
             MessageBody::Invite { name, .. } => format!("Convite para {name}"),
             MessageBody::Poll { q, .. } => format!("Enquete: {q}"),
+            MessageBody::Event { title, .. } => format!("Evento: {title}"),
             MessageBody::Deleted => "Mensagem apagada".into(),
             MessageBody::System { sys, v, legacy } => {
                 if let Some(t) = legacy {
@@ -1630,7 +1659,9 @@ impl Engine {
 
     /// Apaga para todos: a mensagem vira "Mensagem apagada" — só se quem pediu
     /// for quem escreveu.
-    fn apply_delete(&self, key: &str, ids: &[String], from: &str) -> Result<()> {
+    /// `moderador`: quem pediu pode apagar mensagens dos outros (cargo com
+    /// o poder "del", num grupo).
+    fn apply_delete(&self, key: &str, ids: &[String], from: &str, moderador: bool) -> Result<()> {
         let eu = self.pk_hex();
         for id in ids {
             if !is_hex64(id) {
@@ -1639,7 +1670,7 @@ impl Engine {
             let msg = {
                 let store = self.store.lock().unwrap();
                 let Some(m) = store.get_msg(id)? else { continue };
-                if m.chat != key || m.author != from {
+                if m.chat != key || (m.author != from && !moderador) {
                     continue;
                 }
                 if let MessageBody::Media(md) = MessageBody::from_stored(&m.kind, &m.body) {
@@ -2291,6 +2322,143 @@ impl Engine {
         Ok(())
     }
 
+    /* ---------------- eventos ---------------- */
+
+    /// Eventos que começam dentro de `antes_ms` e ainda não foram lembrados,
+    /// e a que a pessoa não respondeu "não vou". Cada um é lembrado uma vez.
+    pub fn due_event_reminders(&self, antes_ms: i64) -> Vec<(String, String, i64)> {
+        let eu = self.pk_hex();
+        let agora = now_ms();
+        let store = self.store.lock().unwrap();
+        let mut avisados: Vec<String> = store.get_kv("evt_avisados").ok().flatten().unwrap_or_default();
+        let Ok(mut st) = store.raw().prepare("SELECT id, chat, author, kind, ts, body, status, exp, reply, reacts FROM msgs WHERE kind = 'event'") else { return Vec::new() };
+        let linhas: Vec<StoredMsg> = st
+            .query_map([], |r| {
+                Ok(StoredMsg { id: r.get(0)?, chat: r.get(1)?, author: r.get(2)?, kind: r.get(3)?, ts: r.get(4)?, body: r.get(5)?, status: r.get(6)?, exp: r.get(7)?, reply: r.get(8)?, reacts: r.get(9)? })
+            })
+            .map(|it| it.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default();
+        drop(st);
+        let mut v = Vec::new();
+        for sm in linhas {
+            if avisados.contains(&sm.id) {
+                continue;
+            }
+            let m = from_stored(sm, &eu);
+            if let MessageBody::Event { title, at, rsvp, .. } = &m.body {
+                let vou = rsvp.get(&eu).map(|r| r != "n").unwrap_or(true);
+                if *at > agora - 60_000 && *at - agora <= antes_ms && vou {
+                    avisados.push(m.id.clone());
+                    v.push((m.chat.clone(), title.clone(), *at));
+                }
+            }
+        }
+        if !v.is_empty() {
+            let n = avisados.len();
+            if n > 300 {
+                avisados.drain(..n - 300);
+            }
+            let _ = store.set_kv("evt_avisados", &avisados);
+        }
+        v
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_event(&self, key: &str, id: String, from: &str, mine: bool, ts: i64, ti: &str, at: i64, d: &str, exp: Option<i64>) -> Result<()> {
+        let title = clamp(ti, 120);
+        // Datas absurdas (antes de 2020 ou depois de 2100) não entram.
+        if title.is_empty() || !(1_577_836_800_000..4_102_444_800_000).contains(&at) {
+            return Ok(());
+        }
+        self.add_msg(
+            key,
+            Message {
+                id,
+                chat: key.into(),
+                author: from.into(),
+                from_me: mine,
+                ts,
+                body: MessageBody::Event { title, at, desc: clamp(d, 500), rsvp: BTreeMap::new() },
+                status: mine.then_some(Delivery::Sent),
+                reply: None,
+                reacts: BTreeMap::new(),
+                exp,
+                edited: None,
+                fwd: false,
+                lp: None,
+            },
+            !mine,
+        )?;
+        Ok(())
+    }
+
+    /// Marca um evento (título, quando em ms, descrição).
+    pub async fn send_event(self: &Arc<Self>, chat_key: &str, title: &str, at: i64, desc: &str) -> Result<Message> {
+        self.check_group_joined(chat_key)?;
+        let title = clamp(title, 120);
+        if title.is_empty() {
+            return Err(erro("Dê um nome ao evento."));
+        }
+        if at < now_ms() - 3_600_000 {
+            return Err(erro("A data do evento já passou."));
+        }
+        let desc = clamp(desc, 500);
+        let app = AppMessage::Event { ti: title.clone(), at, d: desc.clone() };
+        let b = self.build(chat_key, KIND_APP, app.to_json(), Vec::new(), BuildOpts::default())?;
+        self.ensure_dm_contact(chat_key).await?;
+        let msg = Message {
+            id: b.id.clone(),
+            chat: chat_key.into(),
+            author: self.pk_hex(),
+            from_me: true,
+            ts: b.created_ms,
+            body: MessageBody::Event { title, at, desc, rsvp: BTreeMap::new() },
+            status: None,
+            reply: None,
+            reacts: BTreeMap::new(),
+            exp: None,
+            edited: None,
+            fwd: false,
+            lp: None,
+        };
+        self.local_send(chat_key, msg, &b).await
+    }
+
+    fn apply_rsvp(&self, key: &str, id: &str, resp: &str, from: &str) -> Result<()> {
+        if !is_hex64(id) {
+            return Ok(());
+        }
+        let eu = self.pk_hex();
+        let msg = {
+            let store = self.store.lock().unwrap();
+            let Some(sm) = store.get_msg(id)? else { return Ok(()) };
+            if sm.chat != key || sm.kind != "event" {
+                return Ok(());
+            }
+            let mut m = from_stored(sm, &eu);
+            let MessageBody::Event { rsvp, .. } = &mut m.body else { return Ok(()) };
+            match resp {
+                "y" | "m" | "n" => {
+                    rsvp.insert(from.to_string(), resp.to_string());
+                }
+                _ => {
+                    rsvp.remove(from);
+                }
+            }
+            store.update_msg(&to_stored(&m))?;
+            m
+        };
+        let _ = self.events.send(EngineEvent::MessageChanged { chat: key.into(), message: Box::new(msg) });
+        Ok(())
+    }
+
+    /// Responde a um evento: "y" vou, "m" talvez, "n" não vou, "" tira.
+    pub async fn rsvp(self: &Arc<Self>, chat_key: &str, id: &str, resp: &str) -> Result<()> {
+        self.apply_rsvp(chat_key, id, resp, &self.pk_hex())?;
+        self.send_app(chat_key, &AppMessage::Rsvp { id: id.into(), r: resp.into() }, BuildOpts { no_ttl: true, ..Default::default() }).await?;
+        Ok(())
+    }
+
     /* ---------------- online / ausente ---------------- */
 
     /// `Some("on")`, `Some("away")` ou `None` (sumiu, escondeu, ou eu escondi o meu).
@@ -2339,7 +2507,12 @@ impl Engine {
 
     /// Apaga para todos (só as suas mensagens).
     pub async fn delete_for_all(self: &Arc<Self>, chat_key: &str, ids: &[String]) -> Result<()> {
-        self.apply_delete(chat_key, ids, &self.pk_hex())?;
+        let eu = self.pk_hex();
+        let moderador = match ChatKey::parse(chat_key) {
+            Some(ChatKey::Channel { lid, .. }) => self.group(&lid).is_some_and(|g| g.meta.can(&eu, "del")),
+            _ => false,
+        };
+        self.apply_delete(chat_key, ids, &eu, moderador)?;
         self.send_app(chat_key, &AppMessage::Delete { ids: ids.to_vec() }, BuildOpts { no_ttl: true, ..Default::default() })
             .await?;
         Ok(())

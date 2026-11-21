@@ -409,6 +409,7 @@ pub enum Modal {
     Crop(CropState),
     Search { all: Vec<CoreMessage>, query: String },
     Forward { id: String, query: String },
+    NewEvent { title: String, date: String, time: String, desc: String },
     ViewOnce { handle: image::Handle },
     Pins { list: Vec<CoreMessage> },
     NewPoll { q: String, opts: Vec<String>, multi: bool },
@@ -452,6 +453,8 @@ pub struct RoleForm {
     pub id: Option<String>,
     pub name: String,
     pub c: u8,
+    /// Poderes marcados.
+    pub p: Vec<String>,
 }
 
 pub const PAGE: usize = 60;
@@ -542,6 +545,8 @@ pub struct Main {
     pub autostart: bool,
     /// Última conferência da sincronia com os outros aparelhos da conta.
     pub sync_at: Instant,
+    /// Última conferência dos lembretes de eventos.
+    pub evt_at: Instant,
     /// Mensagem destacada depois de pular até ela.
     pub flash: Option<(String, Instant)>,
     pub share_quality: Quality,
@@ -663,6 +668,7 @@ impl Main {
             tray_told: false,
             autostart: crate::tray::autostart(),
             sync_at: Instant::now() - Duration::from_secs(50),
+            evt_at: Instant::now(),
             flash: None,
             share_quality: Quality::P1080,
             modal: None,
@@ -995,10 +1001,11 @@ impl Main {
     }
 
     /// O texto menciona a pessoa (`@nome` ou `@todos`) num grupo?
-    pub fn mentions_me(&self, chat: &str, texto: &str) -> bool {
+    /// `@todos` só vale de quem tem o poder (admin ou cargo com "todos").
+    pub fn mentions_me(&self, chat: &str, texto: &str, autor: &str) -> bool {
         let Some(lid) = chat.strip_prefix("g:").and_then(|r| r.split(':').next()) else { return false };
         let t = texto.to_lowercase();
-        if t.contains("@todos") || t.contains("@everyone") {
+        if (t.contains("@todos") || t.contains("@everyone")) && self.group(lid).is_some_and(|g| g.meta.can(autor, "todos")) {
             return true;
         }
         self.my_names(lid).iter().any(|n| t.contains(&format!("@{n}")))

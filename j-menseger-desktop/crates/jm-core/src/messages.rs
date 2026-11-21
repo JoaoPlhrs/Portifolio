@@ -294,6 +294,17 @@ pub enum AppMessage {
     /// Online (`on`), ausente (`away`) ou escondido (`off`). Sempre efêmero.
     #[serde(rename = "pres")]
     Presence { s: String },
+    /// Evento: título, quando (ms) e descrição.
+    #[serde(rename = "evt")]
+    Event {
+        ti: String,
+        at: i64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        d: String,
+    },
+    /// Resposta a um evento: `y` vou, `m` talvez, `n` não vou (vazio tira).
+    #[serde(rename = "rsvp")]
+    Rsvp { id: String, r: String },
     /// Quem recebeu abriu a mídia de visualização única (só em conversa a dois).
     #[serde(rename = "voo")]
     ViewOnceOpened { id: String },

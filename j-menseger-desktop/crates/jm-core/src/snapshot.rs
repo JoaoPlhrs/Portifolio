@@ -134,6 +134,11 @@ fn msg_to_json(m: &Message) -> Option<Value> {
             v["poll"] = json!({ "q": q, "o": o, "m": *multi as u8 });
             v["votes"] = json!(votes);
         }
+        MessageBody::Event { title, at, desc, rsvp } => {
+            v["kind"] = "event".into();
+            v["evt"] = json!({ "ti": title, "at": at, "d": desc });
+            v["rsvp"] = json!(rsvp);
+        }
         MessageBody::Deleted => v["kind"] = "deleted".into(),
         MessageBody::Media(_) | MessageBody::Invite { .. } => return None,
     }
@@ -176,6 +181,15 @@ fn msg_from_json(v: &Value, eu: &str) -> Option<Message> {
                 .map(|(pk, xs)| (pk, xs.into_iter().filter(|x| *x >= 0 && (*x as usize) < o.len()).map(|x| x as u8).collect()))
                 .collect();
             MessageBody::Poll { q: clamp(p["q"].as_str().unwrap_or_default(), 200), multi: p["m"].as_i64().unwrap_or(0) != 0, o, votes }
+        }
+        "event" => {
+            let e = &v["evt"];
+            let rsvp: BTreeMap<String, String> = serde_json::from_value::<BTreeMap<String, String>>(v["rsvp"].clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(pk, r)| is_hex64(pk) && matches!(r.as_str(), "y" | "m" | "n"))
+                .collect();
+            MessageBody::Event { title: clamp(e["ti"].as_str().unwrap_or_default(), 120), at: e["at"].as_i64().unwrap_or(0), desc: clamp(e["d"].as_str().unwrap_or_default(), 500), rsvp }
         }
         "deleted" => MessageBody::Deleted,
         _ => return None,
